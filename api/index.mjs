@@ -913,7 +913,7 @@ app.post('/api/scrape/140online/search', async (req, res) => {
     const { query, maxPages } = req.body;
     if (!query) return res.status(400).json({ error: 'query is required' });
 
-    const pages = Math.min(Math.max(parseInt(maxPages) || 5, 1), 85);
+    const pages = Math.min(Math.max(parseInt(maxPages) || 5, 1), 200);
     const { businesses, total } = await scrape140Online(query, pages);
 
     // Check which phones already exist
@@ -948,7 +948,7 @@ app.post('/api/scrape/140online/build-queries', async (req, res) => {
     const { query, maxPages } = req.body;
     if (!query) return res.status(400).json({ error: 'query is required' });
 
-    const pages = Math.min(Math.max(parseInt(maxPages) || 5, 1), 85);
+    const pages = Math.min(Math.max(parseInt(maxPages) || 5, 1), 200);
     const acResp = await fetch(`${ONLINE140_BASE}/autoComplete.aspx?term=${encodeURIComponent(query)}`, {
       headers: { 'User-Agent': getRandomUA(), 'Accept': 'application/json' },
     });
