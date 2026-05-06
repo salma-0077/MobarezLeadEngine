@@ -44,6 +44,17 @@ interface ScrapedLead {
   alreadySaved?: boolean;
 }
 
+interface Online140Task {
+  type: 'company' | 'category_page';
+  url?: string;
+  fallbackName?: string;
+  catId?: string;
+  catName?: string;
+  page?: number;
+  chunk?: number;
+  label?: string;
+}
+
 const CITIES_AR = [
   'القاهرة', 'الجيزة', 'الإسكندرية', 'المنصورة', 'طنطا',
   'الزقازيق', 'أسيوط', 'الأقصر', 'أسوان', 'بورسعيد',
@@ -478,45 +489,110 @@ export default function DataCollectionPage() {
     setSaveResult(null);
     setResults([]);
     setSearchStats(null);
+    setQueryStats([]);
+    setQueriesRun(0);
     setProgressMsg(language === 'ar' ? 'جاري البحث في دليل 140 أونلاين...' : 'Searching 140Online directory...');
-    setProgressPercent(30);
+    setProgressPercent(5);
 
     try {
-      const searchQuery = gmapsQuery || industry;
-      const res = await fetch('/api/scrape/140online/search', {
+      const searchQuery = (gmapsQuery || industry).trim();
+
+      // Step 1: build small tasks, then execute one-by-one (same pattern as Google Maps comprehensive mode)
+      const buildRes = await fetch('/api/scrape/140online/build-queries', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: searchQuery, maxPages }),
       });
 
-      if (!res.ok) {
-        const err = await res.json();
+      if (!buildRes.ok) {
+        const err = await buildRes.json();
         throw new Error(err.error || 'خطأ في البحث');
       }
 
-      const data = await res.json();
+      const buildData = await buildRes.json();
+      const tasks: Online140Task[] = buildData.tasks || [];
+      if (tasks.length === 0) {
+        setProgressPercent(100);
+        toast.warning(language === 'ar'
+          ? 'لم يتم العثور على نتائج مبدئية — جرّب كلمة بحث مختلفة'
+          : 'No initial matches found — try another query');
+        return;
+      }
+
+      const allLeads: ScrapedLead[] = [];
+      const seenKeys = new Set<string>();
+      const stats: { query: string; found: number; new: number }[] = [];
+
+      const runTask = async (task: Online140Task): Promise<{ leads: ScrapedLead[]; total: number } | null> => {
+        try {
+          const res = await fetch('/api/scrape/140online/search-single', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: searchQuery, task }),
+          });
+          if (res.ok) return await res.json();
+        } catch {
+          // ignore single task failure and continue
+        }
+        return null;
+      };
+
+      for (let i = 0; i < tasks.length; i++) {
+        const task = tasks[i];
+        const label = task.label || `${language === 'ar' ? 'مهمة' : 'Task'} ${i + 1}`;
+
+        setProgressMsg(`${i + 1}/${tasks.length} — ${label}`);
+        setProgressPercent(Math.round((i / tasks.length) * 100));
+
+        if (i > 0) {
+          const delay = 250 + Math.floor(Math.random() * 350);
+          await new Promise(r => setTimeout(r, delay));
+        }
+
+        const data = await runTask(task);
+        if (!data) {
+          stats.push({ query: label, found: 0, new: 0 });
+          setQueryStats([...stats]);
+          setQueriesRun(i + 1);
+          continue;
+        }
+
+        let newCountPerTask = 0;
+        const taskLeads = data.leads || [];
+        for (const lead of taskLeads) {
+          const phoneKey = (lead.phone || '').replace(/[\s\-]+/g, '').trim();
+          const nameKey = (lead.company_name || '').toLowerCase().trim();
+          const dedupeKey = phoneKey || nameKey;
+          if (!dedupeKey || seenKeys.has(dedupeKey)) continue;
+          seenKeys.add(dedupeKey);
+          allLeads.push({
+            ...lead,
+            selected: !lead.alreadySaved,
+          });
+          newCountPerTask++;
+        }
+
+        setResults([...allLeads]);
+        stats.push({ query: label, found: taskLeads.length, new: newCountPerTask });
+        setQueryStats([...stats]);
+        setQueriesRun(i + 1);
+      }
+
       setProgressPercent(100);
-
-      const leads: ScrapedLead[] = (data.leads || []).map((r: ScrapedLead) => ({
-        ...r,
-        selected: !r.alreadySaved,
-      }));
-
-      setResults(leads);
-      const withPhone = leads.filter(l => l.phone).length;
-      const newCount = leads.filter(l => !l.alreadySaved).length;
-      const alreadySaved = leads.filter(l => l.alreadySaved).length;
+      const withPhone = allLeads.filter(l => l.phone).length;
+      const newCount = allLeads.filter(l => !l.alreadySaved).length;
+      const alreadySaved = allLeads.filter(l => l.alreadySaved).length;
       setSearchStats({
-        total: data.totalFound || leads.length,
-        totalScraped: leads.length,
+        total: allLeads.length,
+        totalScraped: allLeads.length,
         withPhone,
         newLeads: newCount,
         alreadySaved,
-        queriesRun: 1,
-        source: 'دليل 140 أونلاين',
+        queriesRun: tasks.length,
+        source: 'دليل 140 أونلاين (بحث شامل)',
       });
 
-      if (leads.length > 0) {
+      if (allLeads.length > 0) {
         toast.success(language === 'ar'
           ? `تم العثور على ${newCount} عميل جديد من دليل 140 أونلاين`
           : `Found ${newCount} new leads from 140Online`);

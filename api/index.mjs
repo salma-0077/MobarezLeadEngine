@@ -704,6 +704,51 @@ function extractPhonesWithNames(bodyText, businesses, seenNames) {
 }
 
 // ====== 140ONLINE.COM SCRAPER ======
+const ONLINE140_BASE = 'https://www.140online.com';
+const ONLINE140_PAGE_SIZE = 20;
+const ONLINE140_CHUNK_SIZE = 10;
+const ONLINE140_CHUNKS_PER_PAGE = Math.ceil(ONLINE140_PAGE_SIZE / ONLINE140_CHUNK_SIZE);
+
+function normalizePhone(phone = '') {
+  return String(phone).replace(/[\s\-]+/g, '').trim();
+}
+
+function build140CategoryPageUrl(catId, catName, page) {
+  const encoded = encodeURIComponent(catName || '');
+  if (page <= 1) return `${ONLINE140_BASE}/Class/${catId}/${encoded}`;
+  return `${ONLINE140_BASE}/class/pages/${catId}/${encoded}/${page}`;
+}
+
+function extract140CompanyLinks($page, seenIds = new Set()) {
+  const companyEntries = [];
+  // Paginated listing pages use /company/ID/NAME/ links in h3 > a
+  $page('a[href*="/company/"]').each((_, el) => {
+    const href = $page(el).attr('href') || '';
+    if (href.includes('AddCompany') || href.includes('javascript:')) return;
+    const idMatch = href.match(/\/company\/([^/]+)\//i);
+    if (idMatch && !seenIds.has(idMatch[1])) {
+      seenIds.add(idMatch[1]);
+      const fullUrl = href.startsWith('http') ? href : `${ONLINE140_BASE}${href.startsWith('/') ? '' : '/'}${href}`;
+      const name = $page(el).text().trim();
+      const fallbackName = (name && name.length > 2 && name.length < 120) ? name : '';
+      companyEntries.push({ url: fullUrl, fallbackName });
+    }
+  });
+
+  // Also check CompanyId= format (used on category pages)
+  $page('a[href*="CompanyId="]').each((_, el) => {
+    const href = $page(el).attr('href') || '';
+    const idMatch = href.match(/CompanyId=([^&]+)/);
+    if (idMatch && !seenIds.has(idMatch[1]) && !href.includes('AddCompany')) {
+      seenIds.add(idMatch[1]);
+      const fullUrl = href.startsWith('http') ? href : `${ONLINE140_BASE}${href.startsWith('/') ? '' : '/'}${href}`;
+      companyEntries.push({ url: fullUrl, fallbackName: '' });
+    }
+  });
+
+  return companyEntries;
+}
+
 async function scrape140Company(companyUrl) {
   try {
     const resp = await fetch(companyUrl, {
@@ -764,46 +809,13 @@ async function scrape140Company(companyUrl) {
 }
 
 async function scrape140Online(query, maxPages = 5) {
-  const BASE = 'https://www.140online.com';
   const businesses = [];
   const seenPhones = new Set();
   const companyEntries = []; // { url, fallbackName }
   const seenIds = new Set();
 
-  // Helper to extract company IDs from a listing page and add to companyEntries
-  function extractCompanyLinks($page) {
-    let count = 0;
-    // Paginated listing pages use /company/ID/NAME/ links in h3 > a
-    $page('a[href*="/company/"]').each((_, el) => {
-      const href = $page(el).attr('href') || '';
-      if (href.includes('AddCompany') || href.includes('javascript:')) return;
-      const idMatch = href.match(/\/company\/([^/]+)\//i);
-      if (idMatch && !seenIds.has(idMatch[1])) {
-        seenIds.add(idMatch[1]);
-        const fullUrl = href.startsWith('http') ? href : `${BASE}${href.startsWith('/') ? '' : '/'}${href}`;
-        // Extract name from link text
-        const name = $page(el).text().trim();
-        const fallbackName = (name && name.length > 2 && name.length < 120) ? name : '';
-        companyEntries.push({ url: fullUrl, fallbackName });
-        count++;
-      }
-    });
-    // Also check CompanyId= format (used only on first category page)
-    $page('a[href*="CompanyId="]').each((_, el) => {
-      const href = $page(el).attr('href') || '';
-      const idMatch = href.match(/CompanyId=([^&]+)/);
-      if (idMatch && !seenIds.has(idMatch[1]) && !href.includes('AddCompany')) {
-        seenIds.add(idMatch[1]);
-        const fullUrl = href.startsWith('http') ? href : `${BASE}${href.startsWith('/') ? '' : '/'}${href}`;
-        companyEntries.push({ url: fullUrl, fallbackName: '' });
-        count++;
-      }
-    });
-    return count;
-  }
-
   // Step 1: Use autocomplete API to find matching companies and categories
-  const acResp = await fetch(`${BASE}/autoComplete.aspx?term=${encodeURIComponent(query)}`, {
+  const acResp = await fetch(`${ONLINE140_BASE}/autoComplete.aspx?term=${encodeURIComponent(query)}`, {
     headers: { 'User-Agent': getRandomUA(), 'Accept': 'application/json' },
   });
   if (!acResp.ok) return { businesses, total: 0 };
@@ -815,19 +827,18 @@ async function scrape140Online(query, maxPages = 5) {
       seenIds.add(item.id);
       const nameSlug = encodeURIComponent(item.nm || item.label || '');
       companyEntries.push({
-        url: `${BASE}/company/${item.id}/${nameSlug}/`,
+        url: `${ONLINE140_BASE}/company/${item.id}/${nameSlug}/`,
         fallbackName: item.nm || item.label || '',
       });
     }
   }
 
   // Step 2: For category results, crawl multiple listing pages
-  const categoryItems = acResults.filter(i => i.cat === 'clas').slice(0, 2);
+  const categoryItems = acResults.filter(i => i.cat === 'clas');
   for (const cat of categoryItems) {
     try {
       // Fetch first page of the category
-      const catName = encodeURIComponent(cat.label || '');
-      const firstPageUrl = `${BASE}/Class/${cat.id}/${catName}`;
+      const firstPageUrl = build140CategoryPageUrl(cat.id, cat.label || '', 1);
       const resp1 = await fetch(firstPageUrl, {
         headers: { 'User-Agent': getRandomUA(), 'Accept': 'text/html' },
         redirect: 'follow',
@@ -835,19 +846,20 @@ async function scrape140Online(query, maxPages = 5) {
       if (!resp1.ok) continue;
       const html1 = await resp1.text();
       const $1 = cheerio.load(html1);
-      extractCompanyLinks($1);
+      const firstPageEntries = extract140CompanyLinks($1, seenIds);
+      companyEntries.push(...firstPageEntries);
 
       // Check total + determine max pages available
       const totalText = $1('body').text().match(/كل النتائج\s*-?\s*(\d+)/);
       const totalResults = totalText ? parseInt(totalText[1]) : 0;
-      const availablePages = Math.ceil(totalResults / 20); // ~20 per page
+      const availablePages = Math.ceil(totalResults / ONLINE140_PAGE_SIZE); // ~20 per page
       const pagesToFetch = Math.min(maxPages - 1, availablePages - 1); // -1 because we already got page 1
 
       // Fetch additional pages
       for (let p = 2; p <= pagesToFetch + 1; p++) {
         await new Promise(r => setTimeout(r, 200));
         try {
-          const pageUrl = `${BASE}/class/pages/${cat.id}/${catName}/${p}`;
+          const pageUrl = build140CategoryPageUrl(cat.id, cat.label || '', p);
           const respP = await fetch(pageUrl, {
             headers: { 'User-Agent': getRandomUA(), 'Accept': 'text/html' },
             redirect: 'follow',
@@ -855,8 +867,9 @@ async function scrape140Online(query, maxPages = 5) {
           if (!respP.ok) continue;
           const htmlP = await respP.text();
           const $p = cheerio.load(htmlP);
-          const found = extractCompanyLinks($p);
-          if (found === 0) break; // No more results
+          const entries = extract140CompanyLinks($p, seenIds);
+          companyEntries.push(...entries);
+          if (entries.length === 0) break; // No more results
         } catch { break; }
       }
     } catch { /* skip failed category */ }
@@ -873,7 +886,7 @@ async function scrape140Online(query, maxPages = 5) {
         const biz = r.value;
         // Use fallback name from listing if scraper didn't find one
         if (!biz.name && batch[j].fallbackName) biz.name = batch[j].fallbackName;
-        const phoneKey = biz.phone.replace(/[\s\-]/g, '');
+        const phoneKey = normalizePhone(biz.phone);
         if (!seenPhones.has(phoneKey)) {
           seenPhones.add(phoneKey);
           businesses.push(biz);
@@ -919,6 +932,162 @@ app.post('/api/scrape/140online/search', async (req, res) => {
     }));
 
     res.json({ leads: results, totalFound: total });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 140Online build batched tasks (frontend runs them one-by-one like gmaps comprehensive mode)
+app.post('/api/scrape/140online/build-queries', async (req, res) => {
+  try {
+    const { query, maxPages } = req.body;
+    if (!query) return res.status(400).json({ error: 'query is required' });
+
+    const pages = Math.min(Math.max(parseInt(maxPages) || 5, 1), 85);
+    const acResp = await fetch(`${ONLINE140_BASE}/autoComplete.aspx?term=${encodeURIComponent(query)}`, {
+      headers: { 'User-Agent': getRandomUA(), 'Accept': 'application/json' },
+    });
+
+    if (!acResp.ok) {
+      return res.status(502).json({ error: 'Failed to load 140Online index' });
+    }
+
+    const acResults = await acResp.json();
+    const tasks = [];
+    const seenTaskKeys = new Set();
+    let directCompanies = 0;
+
+    // Direct company results from autocomplete
+    for (const item of acResults) {
+      if (item.cat !== 'comp' || !item.id) continue;
+      const key = `company:${item.id}`;
+      if (seenTaskKeys.has(key)) continue;
+      seenTaskKeys.add(key);
+      const nameSlug = encodeURIComponent(item.nm || item.label || '');
+      tasks.push({
+        type: 'company',
+        url: `${ONLINE140_BASE}/company/${item.id}/${nameSlug}/`,
+        fallbackName: item.nm || item.label || '',
+        label: item.nm || item.label || `Company ${item.id}`,
+      });
+      directCompanies++;
+    }
+
+    // Category pages split into small chunks (10 companies per request) to avoid serverless timeouts
+    const categoryItems = acResults.filter(item => item.cat === 'clas' && item.id);
+    for (const cat of categoryItems) {
+      const catId = String(cat.id);
+      const catName = String(cat.label || '').trim() || `Category ${catId}`;
+      for (let page = 1; page <= pages; page++) {
+        for (let chunk = 0; chunk < ONLINE140_CHUNKS_PER_PAGE; chunk++) {
+          const key = `cat:${catId}:p${page}:c${chunk}`;
+          if (seenTaskKeys.has(key)) continue;
+          seenTaskKeys.add(key);
+          tasks.push({
+            type: 'category_page',
+            catId,
+            catName,
+            page,
+            chunk,
+            label: `${catName} — صفحة ${page}/${pages} (${chunk + 1}/${ONLINE140_CHUNKS_PER_PAGE})`,
+          });
+        }
+      }
+    }
+
+    res.json({
+      tasks,
+      totalTasks: tasks.length,
+      categories: categoryItems.length,
+      directCompanies,
+      pagesPerCategory: pages,
+      chunkSize: ONLINE140_CHUNK_SIZE,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 140Online run a single small task
+app.post('/api/scrape/140online/search-single', async (req, res) => {
+  try {
+    const { query, task } = req.body;
+    if (!query) return res.status(400).json({ error: 'query is required' });
+    if (!task || !task.type) return res.status(400).json({ error: 'task is required' });
+
+    let businesses = [];
+
+    if (task.type === 'company') {
+      if (!task.url) return res.status(400).json({ error: 'task.url is required for company tasks' });
+      const biz = await scrape140Company(task.url);
+      if (biz) {
+        if (!biz.name && task.fallbackName) biz.name = task.fallbackName;
+        businesses.push(biz);
+      }
+    } else if (task.type === 'category_page') {
+      const catId = String(task.catId || '');
+      const catName = String(task.catName || '');
+      const page = Math.max(parseInt(task.page) || 1, 1);
+      const chunk = Math.max(parseInt(task.chunk) || 0, 0);
+      if (!catId || !catName) return res.status(400).json({ error: 'task.catId and task.catName are required for category_page tasks' });
+
+      const pageUrl = build140CategoryPageUrl(catId, catName, page);
+      const pageResp = await fetch(pageUrl, {
+        headers: { 'User-Agent': getRandomUA(), 'Accept': 'text/html' },
+        redirect: 'follow',
+      });
+
+      if (!pageResp.ok) {
+        return res.json({ leads: [], total: 0, taskLabel: task.label || '' });
+      }
+
+      const pageHtml = await pageResp.text();
+      const $page = cheerio.load(pageHtml);
+      const entries = extract140CompanyLinks($page, new Set());
+      const sliceStart = chunk * ONLINE140_CHUNK_SIZE;
+      const entriesChunk = entries.slice(sliceStart, sliceStart + ONLINE140_CHUNK_SIZE);
+
+      const seenPhones = new Set();
+      const details = await Promise.allSettled(entriesChunk.map(entry => scrape140Company(entry.url)));
+      for (let i = 0; i < details.length; i++) {
+        const result = details[i];
+        if (result.status !== 'fulfilled' || !result.value) continue;
+        const biz = result.value;
+        if (!biz.name && entriesChunk[i].fallbackName) biz.name = entriesChunk[i].fallbackName;
+        const phoneKey = normalizePhone(biz.phone);
+        if (phoneKey && !seenPhones.has(phoneKey)) {
+          seenPhones.add(phoneKey);
+          businesses.push(biz);
+        }
+      }
+    } else {
+      return res.status(400).json({ error: 'Unsupported task type' });
+    }
+
+    const phones = businesses.map(biz => normalizePhone(biz.phone)).filter(Boolean);
+    const existingLeads = phones.length > 0
+      ? await Lead.find({ phone: { $in: phones } }).select('phone').lean()
+      : [];
+    const existingPhones = new Set(existingLeads.map(lead => normalizePhone(lead.phone)));
+
+    const leads = businesses.map(biz => ({
+      company_name: biz.name,
+      phone: normalizePhone(biz.phone),
+      email: '',
+      website: biz.website || '',
+      industry: biz.category || query,
+      city: biz.address || '',
+      source: '140online',
+      address: biz.address || '',
+      rating: 0,
+      alreadySaved: existingPhones.has(normalizePhone(biz.phone)),
+    }));
+
+    res.json({
+      leads,
+      total: leads.length,
+      taskLabel: task.label || '',
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
