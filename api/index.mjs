@@ -724,6 +724,22 @@ function build140ProductPageUrl(prodId, prodName) {
   return `${ONLINE140_BASE}/product/${prodId}/${encoded}`;
 }
 
+function build140KeywordResultPageUrl(query, page = 1) {
+  const base = `${ONLINE140_BASE}/result.aspx?c=0&a=0&txt=${encodeURIComponent(query || '')}`;
+  if (page <= 1) return base;
+  return `${base}&Page=${page}`;
+}
+
+function parse140TotalResults($page) {
+  const totalText = $page('body').text().match(/كل النتائج\s*-?\s*([0-9\u0660-\u0669]+)/);
+  if (!totalText || !totalText[1]) return 0;
+
+  // 140Online sometimes returns Arabic-Indic digits.
+  const normalized = totalText[1].replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 1632));
+  const total = parseInt(normalized, 10);
+  return Number.isFinite(total) ? total : 0;
+}
+
 function extract140CompanyLinks($page, seenIds = new Set()) {
   const companyEntries = [];
   // Paginated listing pages use /company/ID/NAME/ links in h3 > a
@@ -752,6 +768,28 @@ function extract140CompanyLinks($page, seenIds = new Set()) {
   });
 
   return companyEntries;
+}
+
+async function scrape140EntriesChunk(entries, chunk) {
+  const sliceStart = chunk * ONLINE140_CHUNK_SIZE;
+  const entriesChunk = entries.slice(sliceStart, sliceStart + ONLINE140_CHUNK_SIZE);
+  const businesses = [];
+  const seenPhones = new Set();
+
+  const details = await Promise.allSettled(entriesChunk.map(entry => scrape140Company(entry.url)));
+  for (let i = 0; i < details.length; i++) {
+    const result = details[i];
+    if (result.status !== 'fulfilled' || !result.value) continue;
+    const biz = result.value;
+    if (!biz.name && entriesChunk[i].fallbackName) biz.name = entriesChunk[i].fallbackName;
+    const phoneKey = normalizePhone(biz.phone);
+    if (phoneKey && !seenPhones.has(phoneKey)) {
+      seenPhones.add(phoneKey);
+      businesses.push(biz);
+    }
+  }
+
+  return businesses;
 }
 
 async function scrape140Company(companyUrl) {
@@ -855,8 +893,7 @@ async function scrape140Online(query, maxPages = 5) {
       companyEntries.push(...firstPageEntries);
 
       // Check total + determine max pages available
-      const totalText = $1('body').text().match(/كل النتائج\s*-?\s*(\d+)/);
-      const totalResults = totalText ? parseInt(totalText[1]) : 0;
+      const totalResults = parse140TotalResults($1);
       const availablePages = Math.ceil(totalResults / ONLINE140_PAGE_SIZE); // ~20 per page
       const pagesToFetch = Math.min(maxPages - 1, availablePages - 1); // -1 because we already got page 1
 
@@ -878,6 +915,50 @@ async function scrape140Online(query, maxPages = 5) {
         } catch { break; }
       }
     } catch { /* skip failed category */ }
+  }
+
+  // Step 2b: If autocomplete has no categories, fallback to global keyword results
+  // (result.aspx has the "كل النتائج" list shown on 140online.com search page).
+  if (categoryItems.length === 0) {
+    try {
+      const firstResultUrl = build140KeywordResultPageUrl(query, 1);
+      const firstResp = await fetch(firstResultUrl, {
+        headers: { 'User-Agent': getRandomUA(), 'Accept': 'text/html' },
+        redirect: 'follow',
+      });
+
+      if (firstResp.ok) {
+        const firstHtml = await firstResp.text();
+        const $first = cheerio.load(firstHtml);
+        const firstEntries = extract140CompanyLinks($first, seenIds);
+        companyEntries.push(...firstEntries);
+
+        const totalResults = parse140TotalResults($first);
+        const availablePages = totalResults > 0
+          ? Math.ceil(totalResults / ONLINE140_PAGE_SIZE)
+          : 1;
+        const pagesToFetch = Math.min(maxPages - 1, Math.max(availablePages - 1, 0));
+
+        for (let p = 2; p <= pagesToFetch + 1; p++) {
+          await new Promise(r => setTimeout(r, 200));
+          try {
+            const pageUrl = build140KeywordResultPageUrl(query, p);
+            const pageResp = await fetch(pageUrl, {
+              headers: { 'User-Agent': getRandomUA(), 'Accept': 'text/html' },
+              redirect: 'follow',
+            });
+            if (!pageResp.ok) continue;
+            const pageHtml = await pageResp.text();
+            const $page = cheerio.load(pageHtml);
+            const entries = extract140CompanyLinks($page, seenIds);
+            companyEntries.push(...entries);
+            if (entries.length === 0) break;
+          } catch { break; }
+        }
+      }
+    } catch {
+      // Keep direct-company results only if keyword fallback fails.
+    }
   }
 
   // Step 3: Fetch company detail pages in batches of 10 (no limit)
@@ -962,6 +1043,7 @@ app.post('/api/scrape/140online/build-queries', async (req, res) => {
     const seenTaskKeys = new Set();
     let directCompanies = 0;
     let productBuckets = 0;
+    let keywordPages = 0;
 
     // Direct company results from autocomplete
     for (const item of acResults) {
@@ -998,6 +1080,47 @@ app.post('/api/scrape/140online/build-queries', async (req, res) => {
             label: `${catName} — صفحة ${page}/${pages} (${chunk + 1}/${ONLINE140_CHUNKS_PER_PAGE})`,
           });
         }
+      }
+    }
+
+    // If autocomplete doesn't expose class buckets, fallback to global keyword search pages.
+    if (categoryItems.length === 0) {
+      try {
+        const firstResultUrl = build140KeywordResultPageUrl(query, 1);
+        const resultResp = await fetch(firstResultUrl, {
+          headers: { 'User-Agent': getRandomUA(), 'Accept': 'text/html' },
+          redirect: 'follow',
+        });
+
+        if (resultResp.ok) {
+          const resultHtml = await resultResp.text();
+          const $result = cheerio.load(resultHtml);
+          const firstEntries = extract140CompanyLinks($result, new Set());
+          const totalResults = parse140TotalResults($result);
+          const availablePages = totalResults > 0
+            ? Math.ceil(totalResults / ONLINE140_PAGE_SIZE)
+            : (firstEntries.length > 0 ? 1 : 0);
+          const pagesForKeyword = Math.min(pages, availablePages);
+
+          if (pagesForKeyword > 0) {
+            keywordPages = pagesForKeyword;
+            for (let page = 1; page <= pagesForKeyword; page++) {
+              for (let chunk = 0; chunk < ONLINE140_CHUNKS_PER_PAGE; chunk++) {
+                const key = `kw:p${page}:c${chunk}`;
+                if (seenTaskKeys.has(key)) continue;
+                seenTaskKeys.add(key);
+                tasks.push({
+                  type: 'keyword_page',
+                  page,
+                  chunk,
+                  label: `${query} — صفحة ${page}/${pagesForKeyword} (${chunk + 1}/${ONLINE140_CHUNKS_PER_PAGE})`,
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        // Ignore keyword fallback task generation errors and keep other tasks.
       }
     }
 
@@ -1049,6 +1172,7 @@ app.post('/api/scrape/140online/build-queries', async (req, res) => {
       products: productBuckets,
       directCompanies,
       pagesPerCategory: pages,
+      keywordPages,
       chunkSize: ONLINE140_CHUNK_SIZE,
     });
   } catch (err) {
@@ -1127,22 +1251,24 @@ app.post('/api/scrape/140online/search-single', async (req, res) => {
       const productHtml = await productResp.text();
       const $product = cheerio.load(productHtml);
       const entries = extract140CompanyLinks($product, new Set());
-      const sliceStart = chunk * ONLINE140_CHUNK_SIZE;
-      const entriesChunk = entries.slice(sliceStart, sliceStart + ONLINE140_CHUNK_SIZE);
+      businesses = await scrape140EntriesChunk(entries, chunk);
+    } else if (task.type === 'keyword_page') {
+      const page = Math.max(parseInt(task.page) || 1, 1);
+      const chunk = Math.max(parseInt(task.chunk) || 0, 0);
+      const pageUrl = build140KeywordResultPageUrl(query, page);
+      const pageResp = await fetch(pageUrl, {
+        headers: { 'User-Agent': getRandomUA(), 'Accept': 'text/html' },
+        redirect: 'follow',
+      });
 
-      const seenPhones = new Set();
-      const details = await Promise.allSettled(entriesChunk.map(entry => scrape140Company(entry.url)));
-      for (let i = 0; i < details.length; i++) {
-        const result = details[i];
-        if (result.status !== 'fulfilled' || !result.value) continue;
-        const biz = result.value;
-        if (!biz.name && entriesChunk[i].fallbackName) biz.name = entriesChunk[i].fallbackName;
-        const phoneKey = normalizePhone(biz.phone);
-        if (phoneKey && !seenPhones.has(phoneKey)) {
-          seenPhones.add(phoneKey);
-          businesses.push(biz);
-        }
+      if (!pageResp.ok) {
+        return res.json({ leads: [], total: 0, taskLabel: task.label || '' });
       }
+
+      const pageHtml = await pageResp.text();
+      const $page = cheerio.load(pageHtml);
+      const entries = extract140CompanyLinks($page, new Set());
+      businesses = await scrape140EntriesChunk(entries, chunk);
     } else {
       return res.status(400).json({ error: 'Unsupported task type' });
     }

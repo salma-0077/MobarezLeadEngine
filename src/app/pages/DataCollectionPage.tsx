@@ -45,7 +45,7 @@ interface ScrapedLead {
 }
 
 interface Online140Task {
-  type: 'company' | 'category_page' | 'product_page';
+  type: 'company' | 'category_page' | 'product_page' | 'keyword_page';
   url?: string;
   fallbackName?: string;
   catId?: string;
