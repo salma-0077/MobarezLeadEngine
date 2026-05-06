@@ -719,6 +719,11 @@ function build140CategoryPageUrl(catId, catName, page) {
   return `${ONLINE140_BASE}/class/pages/${catId}/${encoded}/${page}`;
 }
 
+function build140ProductPageUrl(prodId, prodName) {
+  const encoded = encodeURIComponent(prodName || '');
+  return `${ONLINE140_BASE}/product/${prodId}/${encoded}`;
+}
+
 function extract140CompanyLinks($page, seenIds = new Set()) {
   const companyEntries = [];
   // Paginated listing pages use /company/ID/NAME/ links in h3 > a
@@ -956,6 +961,7 @@ app.post('/api/scrape/140online/build-queries', async (req, res) => {
     const tasks = [];
     const seenTaskKeys = new Set();
     let directCompanies = 0;
+    let productBuckets = 0;
 
     // Direct company results from autocomplete
     for (const item of acResults) {
@@ -995,10 +1001,52 @@ app.post('/api/scrape/140online/build-queries', async (req, res) => {
       }
     }
 
+    // Product pages can include additional companies even when class suggestions are limited.
+    // Split each product result into chunks to keep each request lightweight.
+    const productItems = acResults.filter(item => item.cat === 'prod' && item.id).slice(0, 10);
+    const maxProductChunks = Math.max(1, pages * ONLINE140_CHUNKS_PER_PAGE);
+    for (const prod of productItems) {
+      const prodId = String(prod.id);
+      const prodName = String(prod.label || '').trim() || `Product ${prodId}`;
+      const productUrl = build140ProductPageUrl(prodId, prodName);
+      let chunksCount = 1;
+
+      try {
+        const productResp = await fetch(productUrl, {
+          headers: { 'User-Agent': getRandomUA(), 'Accept': 'text/html' },
+          redirect: 'follow',
+        });
+        if (productResp.ok) {
+          const productHtml = await productResp.text();
+          const $product = cheerio.load(productHtml);
+          const entries = extract140CompanyLinks($product, new Set());
+          chunksCount = Math.max(1, Math.ceil(entries.length / ONLINE140_CHUNK_SIZE));
+        }
+      } catch {
+        // If product introspection fails, keep one fallback chunk task
+      }
+
+      chunksCount = Math.min(chunksCount, maxProductChunks);
+      for (let chunk = 0; chunk < chunksCount; chunk++) {
+        const key = `prod:${prodId}:c${chunk}`;
+        if (seenTaskKeys.has(key)) continue;
+        seenTaskKeys.add(key);
+        tasks.push({
+          type: 'product_page',
+          prodId,
+          prodName,
+          chunk,
+          label: `${prodName} — ${chunk + 1}/${chunksCount}`,
+        });
+      }
+      productBuckets++;
+    }
+
     res.json({
       tasks,
       totalTasks: tasks.length,
       categories: categoryItems.length,
+      products: productBuckets,
       directCompanies,
       pagesPerCategory: pages,
       chunkSize: ONLINE140_CHUNK_SIZE,
@@ -1044,6 +1092,41 @@ app.post('/api/scrape/140online/search-single', async (req, res) => {
       const pageHtml = await pageResp.text();
       const $page = cheerio.load(pageHtml);
       const entries = extract140CompanyLinks($page, new Set());
+      const sliceStart = chunk * ONLINE140_CHUNK_SIZE;
+      const entriesChunk = entries.slice(sliceStart, sliceStart + ONLINE140_CHUNK_SIZE);
+
+      const seenPhones = new Set();
+      const details = await Promise.allSettled(entriesChunk.map(entry => scrape140Company(entry.url)));
+      for (let i = 0; i < details.length; i++) {
+        const result = details[i];
+        if (result.status !== 'fulfilled' || !result.value) continue;
+        const biz = result.value;
+        if (!biz.name && entriesChunk[i].fallbackName) biz.name = entriesChunk[i].fallbackName;
+        const phoneKey = normalizePhone(biz.phone);
+        if (phoneKey && !seenPhones.has(phoneKey)) {
+          seenPhones.add(phoneKey);
+          businesses.push(biz);
+        }
+      }
+    } else if (task.type === 'product_page') {
+      const prodId = String(task.prodId || '');
+      const prodName = String(task.prodName || '');
+      const chunk = Math.max(parseInt(task.chunk) || 0, 0);
+      if (!prodId || !prodName) return res.status(400).json({ error: 'task.prodId and task.prodName are required for product_page tasks' });
+
+      const productUrl = build140ProductPageUrl(prodId, prodName);
+      const productResp = await fetch(productUrl, {
+        headers: { 'User-Agent': getRandomUA(), 'Accept': 'text/html' },
+        redirect: 'follow',
+      });
+
+      if (!productResp.ok) {
+        return res.json({ leads: [], total: 0, taskLabel: task.label || '' });
+      }
+
+      const productHtml = await productResp.text();
+      const $product = cheerio.load(productHtml);
+      const entries = extract140CompanyLinks($product, new Set());
       const sliceStart = chunk * ONLINE140_CHUNK_SIZE;
       const entriesChunk = entries.slice(sliceStart, sliceStart + ONLINE140_CHUNK_SIZE);
 
