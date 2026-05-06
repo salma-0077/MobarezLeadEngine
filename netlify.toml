@@ -3,9 +3,13 @@ command = "npm run build"
 functions = "api"
 publish = "dist"
 
+[functions]
+node_bundler = "esbuild"
+included_files = ["server/src/**"]
+
 [[redirects]]
 from = "/api/*"
-to = "/.netlify/functions/index:*"
+to = "/.netlify/functions/index/api/:splat"
 status = 200
 
 [[redirects]]

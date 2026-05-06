@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import mongoose from 'mongoose';
 import * as cheerio from 'cheerio';
+import serverless from 'serverless-http';
 
 // Import models
 import '../server/src/models/User.js';
@@ -942,6 +943,9 @@ app.get('/api/scrape/gmaps/test', async (req, res) => {
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' });
 });
+
+// Netlify Functions handler
+export const handler = serverless(app);
 
 // For Vercel — export the Express app as default
 export default app;
