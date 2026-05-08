@@ -49,7 +49,6 @@ export default function DashboardLayout() {
     { icon: LayoutDashboard, label: t('dashboard'), path: '/dashboard' },
     ...(!isSales ? [{ icon: Globe, label: t('data_collection'), path: '/dashboard/collect' }] : []),
     { icon: Users, label: t('leads'), path: '/dashboard/leads' },
-    ...(canManageUsers ? [{ icon: Shield, label: t('users'), path: '/dashboard/users' }] : []),
     ...(isSales ? [{ icon: GitBranch, label: t('pipeline'), path: '/dashboard/pipeline' }] : []),
     ...(!isSales ? [{ icon: PhoneCall, label: t('calls'), path: '/dashboard/calls' }] : []),
     ...(!isSales ? [{ icon: Radio, label: t('auto_dial'), path: '/dashboard/auto-dial' }] : []),
@@ -59,6 +58,7 @@ export default function DashboardLayout() {
     { icon: Calendar, label: t('calendar'), path: '/dashboard/calendar' },
     ...(!isSales ? [{ icon: BarChart3, label: t('reports'), path: '/dashboard/reports' }] : []),
     ...(!isSales ? [{ icon: TrendingUp, label: t('analytics'), path: '/dashboard/analytics' }] : []),
+    ...(canManageUsers ? [{ icon: Shield, label: t('users'), path: '/dashboard/users' }] : []),
     ...(!isSales ? [{ icon: Settings, label: t('settings'), path: '/dashboard/settings' }] : []),
     ...(user.role === 'admin' ? [{ icon: UserCheck, label: t('employee_performance'), path: '/dashboard/employee-performance' }] : []),
   ];
@@ -72,7 +72,7 @@ export default function DashboardLayout() {
     <div className="min-h-screen bg-background" dir={language === 'ar' ? 'rtl' : 'ltr'}>
       {/* Modern Elite Sidebar - Auto collapse/expand on hover */}
       <aside 
-        className={`fixed ${language === 'ar' ? 'right-0' : 'left-0'} top-0 h-full ${isSidebarExpanded ? 'w-64' : 'w-16'} bg-card border-${language === 'ar' ? 'l' : 'r'} border-border z-10 backdrop-blur-xl flex flex-col transition-all duration-300 ease-in-out`}
+        className={`fixed ${language === 'ar' ? 'right-0' : 'left-0'} top-0 h-full ${isSidebarExpanded ? 'w-64' : 'w-20'} bg-card border-${language === 'ar' ? 'l' : 'r'} border-border z-10 backdrop-blur-xl flex flex-col transition-all duration-300 ease-in-out`}
         onMouseEnter={() => setIsSidebarExpanded(true)}
         onMouseLeave={() => setIsSidebarExpanded(false)}
       >
@@ -143,7 +143,7 @@ export default function DashboardLayout() {
       </aside>
 
       {/* Main Content */}
-      <main className={`${language === 'ar' ? (isSidebarExpanded ? 'mr-64' : 'mr-16') : (isSidebarExpanded ? 'ml-64' : 'ml-16')} min-h-screen transition-all duration-300`}>
+      <main className={`${language === 'ar' ? (isSidebarExpanded ? 'mr-64' : 'mr-20') : (isSidebarExpanded ? 'ml-64' : 'ml-20')} min-h-screen transition-all duration-300`}>
         {/* Modern Top Bar with Glass Effect */}
         <div className="sticky top-0 z-20 bg-card/80 backdrop-blur-xl border-b border-border px-6 py-3">
           <div className="flex items-center justify-between">
