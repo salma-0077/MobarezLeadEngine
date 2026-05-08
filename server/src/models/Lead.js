@@ -8,7 +8,7 @@ const leadSchema = new mongoose.Schema({
   search_link: { type: String, default: '' },
   industry: { type: String, required: true },
   city: { type: String, required: true },
-  source: { type: String, enum: ['gmaps', 'phantombuster', 'manual', 'linkedin', '140online'], required: true },
+  source: { type: String, enum: ['gmaps', 'phantombuster', 'manual', 'linkedin', '140online', 'facebook'], required: true },
   status: { type: String, enum: ['new', 'contacted', 'followup', 'meeting', 'closed', 'lost'], default: 'new' },
   assigned_to: { type: String, default: '' },
   notes: { type: String, default: '' },

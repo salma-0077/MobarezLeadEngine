@@ -27,12 +27,14 @@ export default function ReportsPage() {
     });
 
   // Lead sources performance
-  const sourcePerformance = ['gmaps', 'phantombuster', 'manual', 'linkedin'].map(source => {
+  const sourcePerformance = ['gmaps', 'facebook', '140online', 'phantombuster', 'manual', 'linkedin'].map(source => {
     const sourceLeads = leads.filter(l => l.source === source);
     const closed = sourceLeads.filter(l => l.status === 'closed').length;
     
     const sourceLabels: Record<string, string> = {
       gmaps: 'Google Maps',
+      facebook: 'Facebook',
+      '140online': language === 'ar' ? 'دليل 140 أونلاين' : '140Online',
       phantombuster: 'PhantomBuster',
       manual: language === 'ar' ? 'يدوي' : 'Manual',
       linkedin: 'LinkedIn',

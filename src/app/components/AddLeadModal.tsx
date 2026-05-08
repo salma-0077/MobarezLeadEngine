@@ -163,12 +163,14 @@ export function AddLeadModal({ isOpen, onClose, onAdd }: AddLeadModalProps) {
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="manual">يدوي</SelectItem>
-                <SelectItem value="gmaps">Google Maps</SelectItem>
-                <SelectItem value="phantombuster">PhantomBuster</SelectItem>
-                <SelectItem value="linkedin">LinkedIn</SelectItem>
-              </SelectContent>
+                <SelectContent>
+                  <SelectItem value="manual">يدوي</SelectItem>
+                  <SelectItem value="gmaps">Google Maps</SelectItem>
+                  <SelectItem value="facebook">Facebook</SelectItem>
+                  <SelectItem value="140online">140Online</SelectItem>
+                  <SelectItem value="phantombuster">PhantomBuster</SelectItem>
+                  <SelectItem value="linkedin">LinkedIn</SelectItem>
+                </SelectContent>
             </Select>
           </div>
 

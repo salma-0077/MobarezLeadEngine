@@ -83,6 +83,8 @@ export default function AnalyticsPage() {
   // Source performance
   const sourceData = [
     { source: 'Google Maps', leads: leads.filter(l => l.source === 'gmaps').length, converted: leads.filter(l => l.source === 'gmaps' && l.status === 'closed').length },
+    { source: 'Facebook', leads: leads.filter(l => l.source === 'facebook').length, converted: leads.filter(l => l.source === 'facebook' && l.status === 'closed').length },
+    { source: language === 'ar' ? 'دليل 140 أونلاين' : '140Online', leads: leads.filter(l => l.source === '140online').length, converted: leads.filter(l => l.source === '140online' && l.status === 'closed').length },
     { source: 'PhantomBuster', leads: leads.filter(l => l.source === 'phantombuster').length, converted: leads.filter(l => l.source === 'phantombuster' && l.status === 'closed').length },
     { source: 'LinkedIn', leads: leads.filter(l => l.source === 'linkedin').length, converted: leads.filter(l => l.source === 'linkedin' && l.status === 'closed').length },
     { source: language === 'ar' ? 'يدوي' : 'Manual', leads: leads.filter(l => l.source === 'manual').length, converted: leads.filter(l => l.source === 'manual' && l.status === 'closed').length },

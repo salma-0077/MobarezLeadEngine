@@ -198,6 +198,8 @@ export default function EditLeadModal({ lead, isOpen, onClose }: EditLeadModalPr
                 <SelectContent>
                   <SelectItem value="manual">{language === 'ar' ? 'يدوي' : 'Manual'}</SelectItem>
                   <SelectItem value="gmaps">Google Maps</SelectItem>
+                  <SelectItem value="facebook">Facebook</SelectItem>
+                  <SelectItem value="140online">140Online</SelectItem>
                   <SelectItem value="phantombuster">PhantomBuster</SelectItem>
                   <SelectItem value="linkedin">LinkedIn</SelectItem>
                 </SelectContent>

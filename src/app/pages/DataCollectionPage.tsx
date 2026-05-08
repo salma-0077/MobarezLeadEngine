@@ -39,7 +39,7 @@ interface ScrapedLead {
   search_link?: string;
   industry: string;
   city: string;
-  source: 'gmaps' | '140online';
+  source: 'gmaps' | '140online' | 'facebook';
   address?: string;
   rating?: number;
   selected?: boolean;
@@ -209,13 +209,19 @@ const buildGoogleMapsSearchUrl = (query: string) => {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(normalizedQuery)}`;
 };
 
+const buildFacebookSearchUrl = (query: string) => {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) return '';
+  return `https://www.facebook.com/search/top?q=${encodeURIComponent(normalizedQuery)}`;
+};
+
 export default function DataCollectionPage() {
   const { users, settings } = useCRM();
   const { language } = useLanguage();
   const { user } = useAuth();
 
   const [industry, setIndustry] = useState('عيادات');
-  const [searchSource, setSearchSource] = useState<'gmaps' | '140online'>('gmaps');
+  const [searchSource, setSearchSource] = useState<'gmaps' | '140online' | 'facebook'>('gmaps');
 
   // Google Maps direct scrape params
   const [gmapsQuery, setGmapsQuery] = useState('');
@@ -223,6 +229,8 @@ export default function DataCollectionPage() {
   const [gmapsCity, setGmapsCity] = useState('القاهرة');
   const [gmapsArea, setGmapsArea] = useState('');
   const [comprehensive, setComprehensive] = useState(false);
+  const [facebookComprehensive, setFacebookComprehensive] = useState(true);
+  const [facebookSearchLink, setFacebookSearchLink] = useState('');
   const [queriesRun, setQueriesRun] = useState(0);
   const [queryStats, setQueryStats] = useState<{ query: string; found: number; new: number }[]>([]);
 
@@ -632,16 +640,165 @@ export default function DataCollectionPage() {
     }
   };
 
+  // Search Facebook using batched multi-query mode (similar to Google Maps comprehensive flow)
+  const searchFacebook = async () => {
+    setIsSearching(true);
+    setSaveResult(null);
+    setResults([]);
+    setSearchStats(null);
+    setQueryStats([]);
+    setQueriesRun(0);
+    setProgressMsg(language === 'ar' ? 'جاري البحث في Facebook...' : 'Searching Facebook...');
+    setProgressPercent(0);
+
+    const selectedArea = gmapsArea && gmapsArea !== 'all' ? gmapsArea : '';
+    const searchQuery = (gmapsQuery || `${industry} ${selectedArea || gmapsCity}`).trim();
+    const fallbackSearchLink = buildFacebookSearchUrl(searchQuery);
+    const effectiveSearchLink = facebookSearchLink.trim() || fallbackSearchLink;
+    if (!facebookSearchLink.trim() && effectiveSearchLink) {
+      setFacebookSearchLink(effectiveSearchLink);
+    }
+
+    try {
+      if (!searchQuery) {
+        throw new Error(language === 'ar' ? 'يرجى إدخال كلمة بحث' : 'Please enter a search query');
+      }
+
+      const buildRes = await fetch('/api/scrape/facebook/build-queries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: searchQuery,
+          city: gmapsCity,
+          area: selectedArea,
+          comprehensive: facebookComprehensive,
+        }),
+      });
+
+      if (!buildRes.ok) {
+        const err = await buildRes.json();
+        throw new Error(err.error || (language === 'ar' ? 'فشل تجهيز الاستعلامات' : 'Failed to build queries'));
+      }
+
+      const buildData = await buildRes.json();
+      const queries: string[] = buildData.queries || [];
+      if (queries.length === 0) {
+        throw new Error(language === 'ar' ? 'لا توجد استعلامات للبحث' : 'No queries to search');
+      }
+
+      const allLeads: ScrapedLead[] = [];
+      const seenKeys = new Set<string>();
+      const stats: { query: string; found: number; new: number }[] = [];
+
+      const runQuery = async (queryText: string, engineHint: number): Promise<{ leads: ScrapedLead[]; total: number } | null> => {
+        try {
+          const res = await fetch('/api/scrape/facebook/search-single', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: queryText, engineHint }),
+          });
+          if (res.ok) return await res.json();
+        } catch {
+          // ignore per-query failure and continue
+        }
+        return null;
+      };
+
+      for (let i = 0; i < queries.length; i++) {
+        const queryText = queries[i];
+        const label = queryText.length > 45 ? `${queryText.slice(0, 45)}...` : queryText;
+
+        setProgressMsg(`${i + 1}/${queries.length} — ${label}`);
+        setProgressPercent(Math.round((i / queries.length) * 100));
+
+        if (i > 0) {
+          const delay = 800 + Math.floor(Math.random() * 1200);
+          await new Promise(r => setTimeout(r, delay));
+        }
+
+        const engineHint = (i % 3) + 1;
+        const data = await runQuery(queryText, engineHint);
+        if (!data) {
+          stats.push({ query: label, found: 0, new: 0 });
+          setQueryStats([...stats]);
+          setQueriesRun(i + 1);
+          continue;
+        }
+
+        const querySearchLink = buildFacebookSearchUrl(queryText);
+        let newCountPerQuery = 0;
+        for (const lead of data.leads || []) {
+          const phoneKey = (lead.phone || '').replace(/[\s\-]+/g, '').trim();
+          const nameKey = (lead.company_name || '').toLowerCase().trim();
+          const dedupeKey = phoneKey || nameKey;
+          if (!dedupeKey || seenKeys.has(dedupeKey)) continue;
+          seenKeys.add(dedupeKey);
+          allLeads.push({
+            ...lead,
+            industry: lead.industry || industry,
+            city: lead.city || selectedArea || gmapsCity,
+            search_link: lead.search_link || querySearchLink || effectiveSearchLink,
+            selected: !lead.alreadySaved,
+          });
+          newCountPerQuery++;
+        }
+
+        setResults([...allLeads]);
+        stats.push({ query: label, found: data.total || 0, new: newCountPerQuery });
+        setQueryStats([...stats]);
+        setQueriesRun(i + 1);
+      }
+
+      setProgressPercent(100);
+      const withPhone = allLeads.filter(l => l.phone).length;
+      const newCount = allLeads.filter(l => !l.alreadySaved).length;
+      const alreadySaved = allLeads.filter(l => l.alreadySaved).length;
+      setSearchStats({
+        total: allLeads.length,
+        totalScraped: allLeads.length,
+        withPhone,
+        newLeads: newCount,
+        alreadySaved,
+        queriesRun: queries.length,
+        source: language === 'ar'
+          ? (facebookComprehensive ? 'Facebook (بحث شامل)' : 'Facebook')
+          : (facebookComprehensive ? 'Facebook (Comprehensive)' : 'Facebook'),
+      });
+
+      if (allLeads.length > 0) {
+        toast.success(language === 'ar'
+          ? `تم العثور على ${newCount} عميل جديد من Facebook`
+          : `Found ${newCount} new leads from Facebook`);
+      } else {
+        toast.warning(language === 'ar'
+          ? 'لم يتم العثور على نتائج — جرّب كلمات مختلفة'
+          : 'No results found — try different keywords');
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : (language === 'ar' ? 'خطأ في البحث' : 'Search failed');
+      toast.error(msg);
+    } finally {
+      setIsSearching(false);
+      setProgressMsg('');
+    }
+  };
+
   // Save selected leads to database
   const saveLeads = async () => {
     const selectedArea = gmapsArea && gmapsArea !== 'all' ? gmapsArea : '';
     const fallbackSearchQuery = (gmapsQuery || `${industry} في ${selectedArea || gmapsCity}`).trim();
     const fallbackSearchLink = gmapsSearchLink.trim() || buildGoogleMapsSearchUrl(fallbackSearchQuery);
+    const fallbackFacebookSearchLink = facebookSearchLink.trim() || buildFacebookSearchUrl(fallbackSearchQuery);
     const selected = results
       .filter(r => r.selected)
       .map((lead) => {
-        if (lead.source !== 'gmaps') return lead;
-        return { ...lead, search_link: lead.search_link || fallbackSearchLink };
+        if (lead.source === 'gmaps') {
+          return { ...lead, search_link: lead.search_link || fallbackSearchLink };
+        }
+        if (lead.source === 'facebook') {
+          return { ...lead, search_link: lead.search_link || fallbackFacebookSearchLink };
+        }
+        return lead;
       });
     if (selected.length === 0) {
       toast.error(language === 'ar' ? 'يرجى اختيار عملاء محتملين أولاً' : 'Please select leads first');
@@ -731,6 +888,15 @@ export default function DataCollectionPage() {
           Google Maps
         </Button>
         <Button
+          variant={searchSource === 'facebook' ? 'default' : 'outline'}
+          onClick={() => setSearchSource('facebook')}
+          className="gap-2 flex-1"
+          disabled={isSearching}
+        >
+          <Globe className="h-4 w-4" />
+          Facebook
+        </Button>
+        <Button
           variant={searchSource === '140online' ? 'default' : 'outline'}
           onClick={() => setSearchSource('140online')}
           className="gap-2 flex-1"
@@ -818,6 +984,138 @@ export default function DataCollectionPage() {
             )}
           </CardContent>
         </Card>
+      )}
+
+      {/* Facebook Search */}
+      {searchSource === 'facebook' && (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Globe className="h-5 w-5 text-indigo-600" />
+            {language === 'ar' ? 'البحث في Facebook' : 'Search Facebook'}
+          </CardTitle>
+          <CardDescription>
+            {language === 'ar'
+              ? 'بحث شامل داخل Facebook باستخدام كلمات مفتاحية متعددة لتوسيع النتائج'
+              : 'Comprehensive Facebook search using multiple keyword variations for wider coverage'}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-2 md:col-span-2">
+              <Label>{language === 'ar' ? 'كلمة البحث' : 'Search Query'}</Label>
+              <Input
+                placeholder={language === 'ar' ? 'مثال: مطاعم، عيادات، مقاولات...' : 'e.g. restaurants, clinics, construction...'}
+                value={gmapsQuery}
+                onChange={e => setGmapsQuery(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {language === 'ar'
+                  ? 'سيتم البحث في Facebook بالكامل باستخدام نفس الكلمة بعدة صيغ'
+                  : 'Will search across Facebook using multiple query variants'}
+              </p>
+
+              <div className="space-y-2 pt-2">
+                <Label>{language === 'ar' ? 'رابط البحث' : 'Search Link'}</Label>
+                <Input
+                  placeholder={language === 'ar' ? 'https://www.facebook.com/search/...' : 'https://www.facebook.com/search/...'}
+                  value={facebookSearchLink}
+                  onChange={e => setFacebookSearchLink(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {language === 'ar'
+                    ? 'يتم حفظ هذا الرابط مع النتائج داخل قاعدة البيانات'
+                    : 'This link is saved with results in the database'}
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>{language === 'ar' ? 'المدينة (اختياري)' : 'City (optional)'}</Label>
+              <Select value={gmapsCity} onValueChange={(v) => { setGmapsCity(v); setGmapsArea(''); }}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CITIES_AR.map(c => (
+                    <SelectItem key={c} value={c}>{c}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {CITY_AREAS[gmapsCity] && CITY_AREAS[gmapsCity].length > 0 && (
+            <div className="space-y-2">
+              <Label>{language === 'ar' ? 'المنطقة / الحي (اختياري)' : 'Area / Neighborhood (optional)'}</Label>
+              <Select value={gmapsArea} onValueChange={setGmapsArea}>
+                <SelectTrigger>
+                  <SelectValue placeholder={language === 'ar' ? 'كل المناطق' : 'All areas'} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{language === 'ar' ? 'كل المناطق' : 'All areas'}</SelectItem>
+                  {CITY_AREAS[gmapsCity].map(a => (
+                    <SelectItem key={a} value={a}>{a}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between p-4 rounded-xl border bg-gradient-to-r from-indigo-500/5 to-blue-500/5">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-indigo-600/10">
+                <Layers className="h-5 w-5 text-indigo-600" />
+              </div>
+              <div>
+                <Label htmlFor="facebook-comprehensive" className="font-semibold cursor-pointer">
+                  {language === 'ar' ? 'بحث شامل في Facebook' : 'Comprehensive Facebook Search'}
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {language === 'ar'
+                    ? 'يقسم البحث إلى استعلامات متعددة لتفادي حدود النتائج'
+                    : 'Splits search into multiple queries to avoid result limits'}
+                </p>
+              </div>
+            </div>
+            <Switch
+              id="facebook-comprehensive"
+              checked={facebookComprehensive}
+              onCheckedChange={setFacebookComprehensive}
+            />
+          </div>
+
+          <Button onClick={searchFacebook} disabled={isSearching} className="gap-2" size="lg">
+            {isSearching ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : facebookComprehensive ? (
+              <Layers className="h-4 w-4" />
+            ) : (
+              <Search className="h-4 w-4" />
+            )}
+            {isSearching
+              ? (language === 'ar' ? 'جاري البحث...' : 'Searching...')
+              : (language === 'ar'
+                ? (facebookComprehensive ? 'بحث شامل في Facebook' : 'بحث في Facebook')
+                : (facebookComprehensive ? 'Comprehensive Facebook Search' : 'Search Facebook'))}
+          </Button>
+
+          {isSearching && progressMsg && (
+            <div className="space-y-2 p-4 rounded-xl border bg-gradient-to-r from-indigo-500/5 to-blue-500/5 animate-in fade-in">
+              <div className="flex items-center gap-2 text-sm">
+                <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                <span className="font-medium">{progressMsg}</span>
+              </div>
+              <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
+                <div
+                  className="bg-gradient-to-r from-indigo-500 to-blue-500 h-full rounded-full transition-all duration-500 ease-out"
+                  style={{ width: `${Math.max(progressPercent, 2)}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
       )}
 
       {/* Google Maps Search */}
@@ -1057,7 +1355,13 @@ export default function DataCollectionPage() {
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
               <MapPin className="h-4 w-4 text-blue-600" />
-              {language === 'ar' ? `تفاصيل البحث الشامل (${queryStats.length} منطقة)` : `Comprehensive Search Details (${queryStats.length} areas)`}
+              {language === 'ar'
+                ? (searchSource === 'gmaps'
+                  ? `تفاصيل البحث الشامل (${queryStats.length} منطقة)`
+                  : `تفاصيل الاستعلامات (${queryStats.length})`)
+                : (searchSource === 'gmaps'
+                  ? `Comprehensive Search Details (${queryStats.length} areas)`
+                  : `Query Breakdown (${queryStats.length})`)}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -1234,11 +1538,11 @@ export default function DataCollectionPage() {
             <h3 className="text-lg font-semibold text-muted-foreground">
               {language === 'ar' ? 'ابدأ بالبحث عن عملاء محتملين' : 'Start searching for potential leads'}
             </h3>
-            <p className="text-sm text-muted-foreground mt-2 max-w-md mx-auto">
-              {language === 'ar'
-                ? 'اختر المدينة والنشاط التجاري ثم اضغط بحث لجمع بيانات العملاء المحتملين تلقائياً من الخرائط'
-                : 'Select a city and industry, then click Search to automatically collect lead data from maps'}
-            </p>
+              <p className="text-sm text-muted-foreground mt-2 max-w-md mx-auto">
+                {language === 'ar'
+                ? 'اختر المصدر وكلمة البحث ثم ابدأ الجمع التلقائي للبيانات'
+                : 'Choose a source and keyword, then start automatic data collection'}
+              </p>
           </CardContent>
         </Card>
       )}

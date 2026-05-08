@@ -48,7 +48,7 @@ export interface Lead {
   search_link?: string;
   industry: string;
   city: string;
-  source: 'gmaps' | 'phantombuster' | 'manual' | 'linkedin';
+  source: 'gmaps' | 'phantombuster' | 'manual' | 'linkedin' | '140online' | 'facebook';
   status: 'new' | 'contacted' | 'followup' | 'meeting' | 'closed' | 'lost';
   assigned_to?: string; // User ID
   notes?: string;

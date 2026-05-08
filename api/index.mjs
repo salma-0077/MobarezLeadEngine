@@ -60,6 +60,12 @@ function buildGoogleMapsSearchUrl(query) {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(normalizedQuery)}`;
 }
 
+function buildFacebookSearchUrl(query) {
+  const normalizedQuery = String(query || '').trim();
+  if (!normalizedQuery) return '';
+  return `https://www.facebook.com/search/top?q=${encodeURIComponent(normalizedQuery)}`;
+}
+
 app.post('/api/scrape/save', async (req, res) => {
   try {
     const { leads: leadsData, assignTo } = req.body;
@@ -261,6 +267,106 @@ app.post('/api/scrape/gmaps/search', async (req, res) => {
   }
 });
 
+function buildFacebookScopedQuery(query) {
+  const normalized = String(query || '').trim();
+  if (!normalized) return '';
+  if (/site:\s*facebook\.com/i.test(normalized) || /facebook\.com/i.test(normalized)) {
+    return normalized;
+  }
+  return `${normalized} site:facebook.com`;
+}
+
+// Build Facebook queries endpoint — returns query list for frontend-managed batching
+app.post('/api/scrape/facebook/build-queries', async (req, res) => {
+  try {
+    const { query, city, area, comprehensive } = req.body;
+    const baseQuery = String(query || '').trim();
+    if (!baseQuery) return res.status(400).json({ error: 'query is required' });
+
+    const selectedArea = area && area !== 'all' ? String(area).trim() : '';
+    const scopedBase = buildFacebookScopedQuery(baseQuery);
+    let queries = [scopedBase];
+
+    if (comprehensive) {
+      const variants = [
+        `${baseQuery} Facebook`,
+        `${baseQuery} صفحة فيسبوك`,
+        `${baseQuery} جروب فيسبوك`,
+        `${baseQuery} facebook page`,
+        `${baseQuery} facebook group`,
+        `${baseQuery} contact`,
+        `${baseQuery} رقم هاتف`,
+      ];
+
+      for (const variant of variants) {
+        queries.push(buildFacebookScopedQuery(variant));
+      }
+
+      if (selectedArea) {
+        queries.push(buildFacebookScopedQuery(`${baseQuery} ${selectedArea}`));
+        queries.push(buildFacebookScopedQuery(`${baseQuery} في ${selectedArea}`));
+      } else if (city) {
+        queries.push(buildFacebookScopedQuery(`${baseQuery} ${city}`));
+        queries.push(buildFacebookScopedQuery(`${baseQuery} في ${city}`));
+        const areas = CITY_AREAS_SERVER[city] || [];
+        for (const cityArea of areas) {
+          queries.push(buildFacebookScopedQuery(`${baseQuery} ${cityArea}`));
+        }
+      }
+    }
+
+    queries = [...new Set(queries.map(q => q.trim()).filter(Boolean))].slice(0, 120);
+    res.json({ queries });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Single-query Facebook search endpoint (used by frontend for batched comprehensive search)
+app.post('/api/scrape/facebook/search-single', async (req, res) => {
+  try {
+    const { query, engineHint } = req.body;
+    if (!query) return res.status(400).json({ error: 'query is required' });
+
+    const scopedQuery = buildFacebookScopedQuery(query);
+    const { businesses: results, _debug } = await scrapeLocalSearch(scopedQuery, engineHint || 0);
+
+    const leads = results.map(biz => ({
+      company_name: biz.name,
+      phone: (biz.phone || '').replace(/[\s\-]+/g, ''),
+      email: '',
+      website: /facebook\.com/i.test(biz.website || '') ? biz.website : '',
+      search_link: buildFacebookSearchUrl(query),
+      industry: '',
+      city: '',
+      source: 'facebook',
+      address: biz.address || '',
+      rating: biz.rating || 0,
+    }));
+
+    const phones = leads.filter(l => l.phone).map(l => l.phone);
+    const existingPhones = new Set();
+    if (phones.length > 0) {
+      const existing = await Lead.find({ phone: { $in: phones } }, 'phone');
+      existing.forEach(e => existingPhones.add(e.phone));
+    }
+
+    res.json({
+      leads: leads.map(l => ({
+        ...l,
+        alreadySaved: l.phone ? existingPhones.has(l.phone) : false,
+        selected: l.phone ? !existingPhones.has(l.phone) : true,
+      })),
+      total: leads.length,
+      withPhone: leads.filter(l => l.phone).length,
+      _debug,
+    });
+  } catch (err) {
+    console.error('[scrape/facebook/search-single] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // City areas for comprehensive search
 const CITY_AREAS_SERVER = {
   'القاهرة': ['مدينة نصر','المعادي','الدقي','المهندسين','الزمالك','وسط البلد','مصر الجديدة','العباسية','شبرا','حلوان','التجمع الخامس','الرحاب','مدينتي','المقطم','عين شمس','النزهة','السيدة زينب','الدرب الاحمر','حدائق القبة','المرج','الشروق','بدر','العبور','الزيتون','روض الفرج','المطرية','بولاق','الوايلي','حدائق المعادي','دار السلام','طره','المعصرة','التبين','الخليفة','منشية ناصر','الساحل','شبرا الخيمة','الموسكي','الأزهر','جاردن سيتي','المنيل','الشيخ زايد','القطامية','البساتين','السلام','الأميرية','عزبة النخل','حدائق حلوان','15 مايو','الشرابية','الجمالية','غمرة','عابدين','باب الشعرية','الأزبكية','الحسين'],
@@ -438,6 +544,31 @@ function getRandomUA() {
 const PHONE_REGEX = /(?:0[12]\d[\s\-]?\d{3,4}[\s\-]?\d{3,4}|\+20[\s\-]?\d{1,2}[\s\-]?\d{3,4}[\s\-]?\d{3,4})/;
 const PHONE_REGEX_G = new RegExp(PHONE_REGEX.source, 'g');
 
+function normalizeResultUrl(rawUrl = '') {
+  if (!rawUrl) return '';
+  let candidate = rawUrl.trim();
+
+  if (candidate.startsWith('/url?')) {
+    try {
+      const parsed = new URL(`https://www.google.com${candidate}`);
+      const q = parsed.searchParams.get('q') || '';
+      candidate = q || candidate;
+    } catch {
+      return '';
+    }
+  }
+
+  if (candidate.startsWith('//')) candidate = `https:${candidate}`;
+  if (candidate.startsWith('/')) return '';
+  if (!/^https?:\/\//i.test(candidate)) return '';
+
+  try {
+    return decodeURIComponent(candidate);
+  } catch {
+    return candidate;
+  }
+}
+
 // Request counter — rotates engine per call to distribute load
 let requestCounter = 0;
 
@@ -542,7 +673,8 @@ async function scrapeBraveSearch(query, _debug) {
     if (name && name.length >= 3 && name.length < 80 && !seenNames.has(name.toLowerCase())) {
       seenNames.add(name.toLowerCase());
       seenPhones.add(phone.replace(/[\s\-]/g, ''));
-      businesses.push({ name, phone, address: '', rating: 0, category: '', website: '' });
+      const website = normalizeResultUrl($card.find('a[href]').first().attr('href') || '');
+      businesses.push({ name, phone, address: '', rating: 0, category: '', website });
     }
   });
 
@@ -594,7 +726,8 @@ async function scrapeStartpage(query, _debug) {
 
     if (name && name.length >= 3 && name.length < 80 && !seenNames.has(name.toLowerCase())) {
       seenNames.add(name.toLowerCase());
-      businesses.push({ name, phone: phoneMatch[0], address: '', rating: 0, category: '', website: '' });
+      const website = normalizeResultUrl($result.find('a[href]').first().attr('href') || '');
+      businesses.push({ name, phone: phoneMatch[0], address: '', rating: 0, category: '', website });
     }
   });
 
@@ -660,13 +793,14 @@ async function scrapeGoogleLocal(query, _debug) {
     });
 
     seenNames.add(name.toLowerCase());
+    const website = normalizeResultUrl($el.find('a[href]').first().attr('href') || '');
     businesses.push({
       name,
       phone: phoneMatch ? phoneMatch[0] : '',
       address: '',
       rating,
       category: '',
-      website: '',
+      website,
     });
   });
 
@@ -679,7 +813,8 @@ async function scrapeGoogleLocal(query, _debug) {
       const text = $container.text();
       const phoneMatch = text.match(PHONE_REGEX);
       seenNames.add(name.toLowerCase());
-      businesses.push({ name, phone: phoneMatch ? phoneMatch[0] : '', address: '', rating: 0, category: '', website: '' });
+      const website = normalizeResultUrl($container.find('a[href]').first().attr('href') || '');
+      businesses.push({ name, phone: phoneMatch ? phoneMatch[0] : '', address: '', rating: 0, category: '', website });
     });
   }
 
