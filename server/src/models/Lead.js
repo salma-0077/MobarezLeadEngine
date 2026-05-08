@@ -5,6 +5,7 @@ const leadSchema = new mongoose.Schema({
   phone: { type: String, required: true },
   email: { type: String, default: '' },
   website: { type: String, default: '' },
+  search_link: { type: String, default: '' },
   industry: { type: String, required: true },
   city: { type: String, required: true },
   source: { type: String, enum: ['gmaps', 'phantombuster', 'manual', 'linkedin', '140online'], required: true },

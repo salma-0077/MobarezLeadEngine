@@ -443,7 +443,13 @@ async function scrapeGMapsQuery(page, query, maxPerQuery) {
 }
 
 // Clean and normalize a single business record
-function cleanBusiness(b, industry, city) {
+function buildGoogleMapsSearchUrl(query) {
+  const normalizedQuery = String(query || '').trim();
+  if (!normalizedQuery) return '';
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(normalizedQuery)}`;
+}
+
+function cleanBusiness(b, industry, city, searchQuery) {
   let phone = (b.phone || '').replace(/^tel:/, '').replace(/\s+/g, '').trim();
   let address = (b.address || '')
     .replace(/[\s\u200b]*(مفتوح|مغلق|Open|Closed|سيغلق قريبًا|يفتح قريبًا|على مدار الساعة|24 ساعة)[\s\u200b]*/gi, '')
@@ -458,6 +464,7 @@ function cleanBusiness(b, industry, city) {
     industry: industry || b.category || '',
     city: city || '',
     source: 'gmaps',
+    search_link: buildGoogleMapsSearchUrl(searchQuery),
     address,
     rating: b.rating || 0,
   };
@@ -585,7 +592,7 @@ router.get('/gmaps/stream', async (req, res) => {
         }
 
         // Clean and filter for phone
-        const cleaned = newBusinesses.map(b => cleanBusiness(b, industry, city));
+        const cleaned = newBusinesses.map(b => cleanBusiness(b, industry, city, q));
         const withPhone = cleaned.filter(r => r.phone && r.phone.length >= 8);
 
         // Check DB for dedup
@@ -678,6 +685,7 @@ router.post('/gmaps', async (req, res) => {
       return res.status(400).json({ error: 'searchQuery or city is required' });
     }
 
+    const baseSearchQuery = searchQuery || `${industry || ''} في ${area || city || ''}`.trim();
     const queries = buildQueryList(searchQuery, city, industry, comprehensive, area);
     const limit = Math.min(maxResults, 10000);
     const maxPerQuery = comprehensive ? Math.min(100, limit) : limit;
@@ -730,7 +738,7 @@ router.post('/gmaps', async (req, res) => {
     await browser.close();
     browser = null;
 
-    const allResults = allBusinesses.slice(0, limit).map(b => cleanBusiness(b, industry, city));
+    const allResults = allBusinesses.slice(0, limit).map(b => cleanBusiness(b, industry, city, baseSearchQuery));
     const withPhone = allResults.filter(r => r.phone && r.phone.length >= 8);
 
     const phoneNumbers = withPhone.map(r => r.phone);
@@ -838,6 +846,7 @@ router.post('/save', async (req, res) => {
           phone: data.phone.replace(/\s+/g, ''),
           email: data.email || '',
           website: data.website || '',
+          search_link: data.search_link || '',
           industry: data.industry || 'غير محدد',
           city: data.city || 'غير محدد',
           source: data.source || 'gmaps',

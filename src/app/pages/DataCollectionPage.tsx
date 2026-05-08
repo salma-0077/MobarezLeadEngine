@@ -28,6 +28,7 @@ import {
   MapPin,
   Zap,
   Layers,
+  ExternalLink,
 } from 'lucide-react';
 
 interface ScrapedLead {
@@ -35,6 +36,7 @@ interface ScrapedLead {
   phone: string;
   email: string;
   website: string;
+  search_link?: string;
   industry: string;
   city: string;
   source: 'gmaps' | '140online';
@@ -201,6 +203,12 @@ const INDUSTRIES_AR = [
   { label: 'مكاتب / شركات', value: 'مكاتب' },
 ];
 
+const buildGoogleMapsSearchUrl = (query: string) => {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) return '';
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(normalizedQuery)}`;
+};
+
 export default function DataCollectionPage() {
   const { users, settings } = useCRM();
   const { language } = useLanguage();
@@ -211,6 +219,7 @@ export default function DataCollectionPage() {
 
   // Google Maps direct scrape params
   const [gmapsQuery, setGmapsQuery] = useState('');
+  const [gmapsSearchLink, setGmapsSearchLink] = useState('');
   const [gmapsCity, setGmapsCity] = useState('القاهرة');
   const [gmapsArea, setGmapsArea] = useState('');
   const [comprehensive, setComprehensive] = useState(false);
@@ -243,6 +252,12 @@ export default function DataCollectionPage() {
     setProgressPercent(0);
 
     const selectedArea = gmapsArea && gmapsArea !== 'all' ? gmapsArea : '';
+    const defaultQuery = (gmapsQuery || `${industry} في ${selectedArea || gmapsCity}`).trim();
+    const fallbackSearchLink = buildGoogleMapsSearchUrl(defaultQuery);
+    const effectiveSearchLink = gmapsSearchLink.trim() || fallbackSearchLink;
+    if (!gmapsSearchLink.trim() && effectiveSearchLink) {
+      setGmapsSearchLink(effectiveSearchLink);
+    }
 
     try {
       if (comprehensive) {
@@ -321,6 +336,7 @@ export default function DataCollectionPage() {
 
         for (let i = 0; i < shuffled.length; i++) {
           const { query, label } = shuffled[i];
+          const querySearchLink = buildGoogleMapsSearchUrl(query);
 
           setProgressMsg(`${i + 1}/${shuffled.length} — ${label}`);
           setProgressPercent(Math.round((i / shuffled.length) * 100));
@@ -347,6 +363,7 @@ export default function DataCollectionPage() {
                   ...lead,
                   industry: lead.industry || industry,
                   city: selectedArea || label,
+                  search_link: lead.search_link || querySearchLink || effectiveSearchLink,
                   selected: !lead.alreadySaved,
                 });
               }
@@ -390,6 +407,7 @@ export default function DataCollectionPage() {
                     ...lead,
                     industry: lead.industry || industry,
                     city: selectedArea || label,
+                    search_link: lead.search_link || buildGoogleMapsSearchUrl(query) || effectiveSearchLink,
                     selected: !lead.alreadySaved,
                   });
                 }
@@ -445,10 +463,12 @@ export default function DataCollectionPage() {
         }
 
         const data = await res.json();
+        const singleSearchLink = effectiveSearchLink || buildGoogleMapsSearchUrl(gmapsQuery || `${industry} في ${selectedArea || gmapsCity}`);
         const leads: ScrapedLead[] = (data.leads || []).map((r: ScrapedLead & { alreadySaved?: boolean }) => ({
           ...r,
           industry: r.industry || industry,
           city: selectedArea || gmapsCity,
+          search_link: r.search_link || singleSearchLink,
           selected: !r.alreadySaved,
         }));
 
@@ -614,7 +634,15 @@ export default function DataCollectionPage() {
 
   // Save selected leads to database
   const saveLeads = async () => {
-    const selected = results.filter(r => r.selected);
+    const selectedArea = gmapsArea && gmapsArea !== 'all' ? gmapsArea : '';
+    const fallbackSearchQuery = (gmapsQuery || `${industry} في ${selectedArea || gmapsCity}`).trim();
+    const fallbackSearchLink = gmapsSearchLink.trim() || buildGoogleMapsSearchUrl(fallbackSearchQuery);
+    const selected = results
+      .filter(r => r.selected)
+      .map((lead) => {
+        if (lead.source !== 'gmaps') return lead;
+        return { ...lead, search_link: lead.search_link || fallbackSearchLink };
+      });
     if (selected.length === 0) {
       toast.error(language === 'ar' ? 'يرجى اختيار عملاء محتملين أولاً' : 'Please select leads first');
       return;
@@ -820,6 +848,20 @@ export default function DataCollectionPage() {
                   ? 'اتركه فارغاً لاستخدام النشاط والمدينة المحددين'
                   : 'Leave empty to use selected industry + city'}
               </p>
+
+              <div className="space-y-2 pt-2">
+                <Label>{language === 'ar' ? 'رابط البحث' : 'Search Link'}</Label>
+                <Input
+                  placeholder={language === 'ar' ? 'https://www.google.com/maps/search/...' : 'https://www.google.com/maps/search/...'}
+                  value={gmapsSearchLink}
+                  onChange={e => setGmapsSearchLink(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {language === 'ar'
+                    ? 'يتم حفظ هذا الرابط مع النتائج داخل قاعدة البيانات'
+                    : 'This link is saved with the results in the database'}
+                </p>
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -1112,6 +1154,7 @@ export default function DataCollectionPage() {
                     <TableHead>{language === 'ar' ? 'اسم الشركة' : 'Company'}</TableHead>
                     <TableHead>{language === 'ar' ? 'الهاتف' : 'Phone'}</TableHead>
                     <TableHead>{language === 'ar' ? 'البريد' : 'Email'}</TableHead>
+                    <TableHead>{language === 'ar' ? 'الرابط' : 'Link'}</TableHead>
                     <TableHead>{language === 'ar' ? 'المدينة' : 'City'}</TableHead>
                     <TableHead>{language === 'ar' ? 'النشاط' : 'Industry'}</TableHead>
                   </TableRow>
@@ -1155,6 +1198,19 @@ export default function DataCollectionPage() {
                             <Mail className="h-3 w-3 text-muted-foreground" />
                             <span className="text-sm">{lead.email}</span>
                           </div>
+                        ) : '—'}
+                      </TableCell>
+                      <TableCell>
+                        {lead.search_link ? (
+                          <a
+                            href={lead.search_link}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-blue-600 hover:underline"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            {language === 'ar' ? 'فتح' : 'Open'}
+                          </a>
                         ) : '—'}
                       </TableCell>
                       <TableCell>{lead.city}</TableCell>

@@ -54,6 +54,12 @@ app.use('/api/settings', settingsRouter);
 
 // Save scraped leads endpoint
 const Lead = mongoose.model('Lead');
+function buildGoogleMapsSearchUrl(query) {
+  const normalizedQuery = String(query || '').trim();
+  if (!normalizedQuery) return '';
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(normalizedQuery)}`;
+}
+
 app.post('/api/scrape/save', async (req, res) => {
   try {
     const { leads: leadsData, assignTo } = req.body;
@@ -77,6 +83,7 @@ app.post('/api/scrape/save', async (req, res) => {
           phone: String(data.phone).replace(/\s+/g, ''),
           email: data.email || '',
           website: data.website || '',
+          search_link: data.search_link || '',
           industry: data.industry || 'غير محدد',
           city: data.city || 'غير محدد',
           source: data.source || 'gmaps',
@@ -143,6 +150,7 @@ app.post('/api/scrape/gmaps/search-single', async (req, res) => {
       phone: (biz.phone || '').replace(/[\s\-]+/g, ''),
       email: '',
       website: biz.website || '',
+      search_link: buildGoogleMapsSearchUrl(query),
       industry: biz.category || '',
       city: '',
       source: 'gmaps',
@@ -213,6 +221,7 @@ app.post('/api/scrape/gmaps/search', async (req, res) => {
               phone: (biz.phone || '').replace(/[\s\-]+/g, ''),
               email: '',
               website: biz.website || '',
+              search_link: buildGoogleMapsSearchUrl(query),
               industry: industry || biz.category || '',
               city: selectedArea || city || '',
               source: 'gmaps',

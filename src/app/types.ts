@@ -45,6 +45,7 @@ export interface Lead {
   phone: string;
   email?: string;
   website?: string;
+  search_link?: string;
   industry: string;
   city: string;
   source: 'gmaps' | 'phantombuster' | 'manual' | 'linkedin';
