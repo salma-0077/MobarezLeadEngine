@@ -59,7 +59,7 @@ export default function DashboardLayout() {
     ...(!isSales ? [{ icon: TrendingUp, label: t('analytics'), path: '/dashboard/analytics' }] : []),
     ...(!isSales ? [{ icon: Settings, label: t('settings'), path: '/dashboard/settings' }] : []),
     ...(user.role === 'admin' ? [{ icon: UserCheck, label: t('employee_performance'), path: '/dashboard/employee-performance' }] : []),
-    ...(user.role === 'admin' ? [{ icon: Shield, label: t('users'), path: '/dashboard/users' }] : []),
+    ...(user.role === 'admin' || user.role === 'manager' ? [{ icon: Shield, label: t('users'), path: '/dashboard/users' }] : []),
   ];
 
   const handleLogout = () => {
