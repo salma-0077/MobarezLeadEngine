@@ -901,8 +901,7 @@ async function scrapeBraveSearch(query, _debug) {
     'Accept-Encoding': 'identity',
   };
 
-  const enhancedQuery = query.includes('رقم') ? query : `${query} رقم هاتف`;
-  const params = new URLSearchParams({ q: enhancedQuery });
+  const params = new URLSearchParams({ q: query });
   const resp = await fetch(`https://search.brave.com/search?${params}`, { headers, redirect: 'follow' });
   _debug.statusCodes.brave = resp.status;
   if (!resp.ok) return businesses;
@@ -924,7 +923,8 @@ async function scrapeBraveSearch(query, _debug) {
       const phoneMatch = cardText.match(PHONE_REGEX);
       if (phoneMatch) phone = phoneMatch[0];
     }
-    if (!phone || phone.length < 8 || seenPhones.has(phone.replace(/[\s\-]/g, ''))) return;
+    const normalizedPhone = phone ? phone.replace(/[\s\-]/g, '') : '';
+    if (normalizedPhone && normalizedPhone.length >= 8 && seenPhones.has(normalizedPhone)) return;
 
     let name = '';
     const $title = $card.find('a[class*="heading"], .snippet-title, .title').first();
@@ -950,7 +950,9 @@ async function scrapeBraveSearch(query, _debug) {
     name = name.replace(/\s*[-|–—›].*$/, '').replace(/\s{2,}/g, ' ').trim();
     if (name && name.length >= 3 && name.length < 80 && !seenNames.has(name.toLowerCase())) {
       seenNames.add(name.toLowerCase());
-      seenPhones.add(phone.replace(/[\s\-]/g, ''));
+      if (normalizedPhone && normalizedPhone.length >= 8) {
+        seenPhones.add(normalizedPhone);
+      }
       const website = normalizeResultUrl($card.find('a[href]').first().attr('href') || '');
       businesses.push({ name, phone, address: '', rating: 0, category: '', website });
     }
@@ -975,8 +977,7 @@ async function scrapeStartpage(query, _debug) {
     'Accept-Encoding': 'identity',
   };
 
-  const enhancedQuery = query.includes('رقم') ? query : `${query} رقم تليفون`;
-  const params = new URLSearchParams({ q: enhancedQuery, language: 'arabic', cat: 'web' });
+  const params = new URLSearchParams({ q: query, language: 'arabic', cat: 'web' });
   const resp = await fetch(`https://www.startpage.com/do/search?${params}`, { headers, redirect: 'follow' });
   _debug.statusCodes.startpage = resp.status;
   if (!resp.ok) return businesses;
@@ -989,7 +990,6 @@ async function scrapeStartpage(query, _debug) {
     const $result = $(el);
     const resultText = $result.text();
     const phoneMatch = resultText.match(PHONE_REGEX);
-    if (!phoneMatch) return;
 
     let name = '';
     const $title = $result.find('h3, h2, .w-gl__result-title, [class*="title"]').first();
@@ -1005,7 +1005,7 @@ async function scrapeStartpage(query, _debug) {
     if (name && name.length >= 3 && name.length < 80 && !seenNames.has(name.toLowerCase())) {
       seenNames.add(name.toLowerCase());
       const website = normalizeResultUrl($result.find('a[href]').first().attr('href') || '');
-      businesses.push({ name, phone: phoneMatch[0], address: '', rating: 0, category: '', website });
+      businesses.push({ name, phone: phoneMatch ? phoneMatch[0] : '', address: '', rating: 0, category: '', website });
     }
   });
 
