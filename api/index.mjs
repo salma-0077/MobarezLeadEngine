@@ -60,6 +60,42 @@ function buildGoogleMapsSearchUrl(query) {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(normalizedQuery)}`;
 }
 
+function buildGoogleMapsCidUrl(cid) {
+  const normalizedCid = String(cid || '').trim();
+  if (!normalizedCid) return '';
+  return `https://www.google.com/maps?cid=${encodeURIComponent(normalizedCid)}`;
+}
+
+function extractGoogleMapsCid(rawUrl) {
+  const normalizedUrl = String(rawUrl || '').trim();
+  if (!normalizedUrl) return '';
+  const cidMatch = normalizedUrl.match(/[?&]cid=([0-9]+)/i);
+  return cidMatch ? cidMatch[1] : '';
+}
+
+function isDirectGoogleMapsUrl(rawUrl) {
+  const normalizedUrl = String(rawUrl || '').trim();
+  if (!/^https?:\/\/(?:www\.)?google\.[^/]+\/maps/i.test(normalizedUrl)) return false;
+  if (/\/maps\/search/i.test(normalizedUrl)) return false;
+  return true;
+}
+
+function buildGoogleMapsLeadLink(biz, fallbackQuery) {
+  const cid = String(biz?.cid || '').trim() || extractGoogleMapsCid(biz?.website || '');
+  if (cid) return buildGoogleMapsCidUrl(cid);
+
+  const website = String(biz?.website || '').trim();
+  if (website && isDirectGoogleMapsUrl(website)) return website;
+
+  const companyQuery = [String(biz?.name || '').trim(), String(biz?.address || '').trim()]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  if (companyQuery) return buildGoogleMapsSearchUrl(companyQuery);
+
+  return buildGoogleMapsSearchUrl(fallbackQuery);
+}
+
 function buildFacebookSearchUrl(query) {
   const normalizedQuery = String(query || '').trim();
   if (!normalizedQuery) return '';
@@ -162,7 +198,7 @@ app.post('/api/scrape/gmaps/search-single', async (req, res) => {
       phone: (biz.phone || '').replace(/[\s\-]+/g, ''),
       email: '',
       website: biz.website || '',
-      search_link: buildGoogleMapsSearchUrl(query),
+      search_link: buildGoogleMapsLeadLink(biz, query),
       industry: biz.category || '',
       city: '',
       source: 'gmaps',
@@ -233,7 +269,7 @@ app.post('/api/scrape/gmaps/search', async (req, res) => {
               phone: (biz.phone || '').replace(/[\s\-]+/g, ''),
               email: '',
               website: biz.website || '',
-              search_link: buildGoogleMapsSearchUrl(query),
+              search_link: buildGoogleMapsLeadLink(biz, query),
               industry: industry || biz.category || '',
               city: selectedArea || city || '',
               source: 'gmaps',
@@ -1052,6 +1088,7 @@ async function scrapeGoogleLocal(query, _debug) {
 
   $('[data-cid]').each((_, el) => {
     const $el = $(el);
+    const cid = String($el.attr('data-cid') || '').trim();
     let name = $el.find('[role="heading"] span').first().text().trim()
       || $el.find('[role="heading"]').first().text().trim()
       || '';
@@ -1079,6 +1116,7 @@ async function scrapeGoogleLocal(query, _debug) {
       rating,
       category: '',
       website,
+      cid,
     });
   });
 
@@ -1092,7 +1130,8 @@ async function scrapeGoogleLocal(query, _debug) {
       const phoneMatch = text.match(PHONE_REGEX);
       seenNames.add(name.toLowerCase());
       const website = normalizeResultUrl($container.find('a[href]').first().attr('href') || '');
-      businesses.push({ name, phone: phoneMatch ? phoneMatch[0] : '', address: '', rating: 0, category: '', website });
+      const cid = extractGoogleMapsCid(website);
+      businesses.push({ name, phone: phoneMatch ? phoneMatch[0] : '', address: '', rating: 0, category: '', website, cid });
     });
   }
 
