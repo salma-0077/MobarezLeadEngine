@@ -3,6 +3,7 @@ import cors from 'cors';
 import mongoose from 'mongoose';
 import * as cheerio from 'cheerio';
 import serverless from 'serverless-http';
+import { scrapeFacebookWithPuppeteer, scrapeLinkedInWithPuppeteer } from './puppeteer-scraper.mjs';
 
 // Import models
 import '../server/src/models/User.js';
@@ -436,7 +437,8 @@ app.post('/api/scrape/facebook/search-single', async (req, res) => {
     const searchQuery = String(query || '').trim();
     if (!searchQuery) return res.status(400).json({ error: 'query is required' });
 
-    const { businesses: results, _debug } = await scrapeLocalSearch(searchQuery, engineHint || 0);
+    // Use Puppeteer for Facebook search
+    const { businesses: results, _debug } = await scrapeFacebookWithPuppeteer(searchQuery);
 
     const leads = results.map(biz => ({
       company_name: biz.name,
@@ -473,6 +475,7 @@ app.post('/api/scrape/facebook/search-single', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 function buildLinkedInScopedQuery(query, enforceSite = true) {
   const normalized = String(query || '').trim();
@@ -605,7 +608,8 @@ app.post('/api/scrape/linkedin/search-single', async (req, res) => {
     const searchQuery = String(query || '').trim();
     if (!searchQuery) return res.status(400).json({ error: 'query is required' });
 
-    const { businesses: results, _debug } = await scrapeLocalSearch(searchQuery, engineHint || 0);
+    // Use Puppeteer for LinkedIn search
+    const { businesses: results, _debug } = await scrapeLinkedInWithPuppeteer(searchQuery);
 
     const leads = results.map(biz => ({
       company_name: biz.name,
@@ -642,6 +646,7 @@ app.post('/api/scrape/linkedin/search-single', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // City areas for comprehensive search
 const CITY_AREAS_SERVER = {

@@ -172,6 +172,11 @@ export default function UsersPage() {
   };
 
   const handleDeleteUser = (id: string) => {
+    const targetUser = users.find(u => u._id === id);
+    if (targetUser?.role === 'admin') {
+      toast.error(language === 'ar' ? 'لا يمكن حذف حساب المدير' : 'Admin account cannot be deleted');
+      return;
+    }
     deleteUser(id);
     toast.success(language === 'ar' ? 'تم حذف المستخدم' : 'User deleted');
   };
@@ -337,9 +342,11 @@ export default function UsersPage() {
                       <Button size="sm" variant="outline" onClick={() => openEditModal(user)}>
                         <Edit className="h-4 w-4" />
                       </Button>
-                      <Button size="sm" variant="destructive" onClick={() => handleDeleteUser(user._id)}>
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      {user.role !== 'admin' && (
+                        <Button size="sm" variant="destructive" onClick={() => handleDeleteUser(user._id)}>
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>
