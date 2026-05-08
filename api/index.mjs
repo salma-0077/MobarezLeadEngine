@@ -66,6 +66,12 @@ function buildFacebookSearchUrl(query) {
   return `https://www.facebook.com/search/top?q=${encodeURIComponent(normalizedQuery)}`;
 }
 
+function buildLinkedInSearchUrl(query) {
+  const normalizedQuery = String(query || '').trim();
+  if (!normalizedQuery) return '';
+  return `https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(normalizedQuery)}`;
+}
+
 app.post('/api/scrape/save', async (req, res) => {
   try {
     const { leads: leadsData, assignTo } = req.body;
@@ -363,6 +369,106 @@ app.post('/api/scrape/facebook/search-single', async (req, res) => {
     });
   } catch (err) {
     console.error('[scrape/facebook/search-single] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function buildLinkedInScopedQuery(query) {
+  const normalized = String(query || '').trim();
+  if (!normalized) return '';
+  if (/site:\s*linkedin\.com/i.test(normalized) || /linkedin\.com/i.test(normalized)) {
+    return normalized;
+  }
+  return `${normalized} site:linkedin.com`;
+}
+
+// Build LinkedIn queries endpoint — returns query list for frontend-managed batching
+app.post('/api/scrape/linkedin/build-queries', async (req, res) => {
+  try {
+    const { query, city, area, comprehensive } = req.body;
+    const baseQuery = String(query || '').trim();
+    if (!baseQuery) return res.status(400).json({ error: 'query is required' });
+
+    const selectedArea = area && area !== 'all' ? String(area).trim() : '';
+    const scopedBase = buildLinkedInScopedQuery(baseQuery);
+    let queries = [scopedBase];
+
+    if (comprehensive) {
+      const variants = [
+        `${baseQuery} LinkedIn`,
+        `${baseQuery} linkedin company`,
+        `${baseQuery} linkedin profile`,
+        `${baseQuery} linkedin page`,
+        `${baseQuery} company`,
+        `${baseQuery} official`,
+        `${baseQuery} contact`,
+      ];
+
+      for (const variant of variants) {
+        queries.push(buildLinkedInScopedQuery(variant));
+      }
+
+      if (selectedArea) {
+        queries.push(buildLinkedInScopedQuery(`${baseQuery} ${selectedArea}`));
+        queries.push(buildLinkedInScopedQuery(`${baseQuery} في ${selectedArea}`));
+      } else if (city) {
+        queries.push(buildLinkedInScopedQuery(`${baseQuery} ${city}`));
+        queries.push(buildLinkedInScopedQuery(`${baseQuery} في ${city}`));
+        const areas = CITY_AREAS_SERVER[city] || [];
+        for (const cityArea of areas) {
+          queries.push(buildLinkedInScopedQuery(`${baseQuery} ${cityArea}`));
+        }
+      }
+    }
+
+    queries = [...new Set(queries.map(q => q.trim()).filter(Boolean))].slice(0, 120);
+    res.json({ queries });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Single-query LinkedIn search endpoint (used by frontend for batched comprehensive search)
+app.post('/api/scrape/linkedin/search-single', async (req, res) => {
+  try {
+    const { query, engineHint } = req.body;
+    if (!query) return res.status(400).json({ error: 'query is required' });
+
+    const scopedQuery = buildLinkedInScopedQuery(query);
+    const { businesses: results, _debug } = await scrapeLocalSearch(scopedQuery, engineHint || 0);
+
+    const leads = results.map(biz => ({
+      company_name: biz.name,
+      phone: (biz.phone || '').replace(/[\s\-]+/g, ''),
+      email: '',
+      website: /linkedin\.com/i.test(biz.website || '') ? biz.website : '',
+      search_link: buildLinkedInSearchUrl(query),
+      industry: '',
+      city: '',
+      source: 'linkedin',
+      address: biz.address || '',
+      rating: biz.rating || 0,
+    }));
+
+    const phones = leads.filter(l => l.phone).map(l => l.phone);
+    const existingPhones = new Set();
+    if (phones.length > 0) {
+      const existing = await Lead.find({ phone: { $in: phones } }, 'phone');
+      existing.forEach(e => existingPhones.add(e.phone));
+    }
+
+    res.json({
+      leads: leads.map(l => ({
+        ...l,
+        alreadySaved: l.phone ? existingPhones.has(l.phone) : false,
+        selected: l.phone ? !existingPhones.has(l.phone) : true,
+      })),
+      total: leads.length,
+      withPhone: leads.filter(l => l.phone).length,
+      _debug,
+    });
+  } catch (err) {
+    console.error('[scrape/linkedin/search-single] Error:', err);
     res.status(500).json({ error: err.message });
   }
 });

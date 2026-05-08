@@ -39,7 +39,7 @@ interface ScrapedLead {
   search_link?: string;
   industry: string;
   city: string;
-  source: 'gmaps' | '140online' | 'facebook';
+  source: 'gmaps' | '140online' | 'facebook' | 'linkedin';
   address?: string;
   rating?: number;
   selected?: boolean;
@@ -215,13 +215,19 @@ const buildFacebookSearchUrl = (query: string) => {
   return `https://www.facebook.com/search/top?q=${encodeURIComponent(normalizedQuery)}`;
 };
 
+const buildLinkedInSearchUrl = (query: string) => {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) return '';
+  return `https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(normalizedQuery)}`;
+};
+
 export default function DataCollectionPage() {
   const { users, settings } = useCRM();
   const { language } = useLanguage();
   const { user } = useAuth();
 
   const [industry, setIndustry] = useState('عيادات');
-  const [searchSource, setSearchSource] = useState<'gmaps' | '140online' | 'facebook'>('gmaps');
+  const [searchSource, setSearchSource] = useState<'gmaps' | '140online' | 'facebook' | 'linkedin'>('gmaps');
 
   // Google Maps direct scrape params
   const [gmapsQuery, setGmapsQuery] = useState('');
@@ -231,6 +237,8 @@ export default function DataCollectionPage() {
   const [comprehensive, setComprehensive] = useState(false);
   const [facebookComprehensive, setFacebookComprehensive] = useState(true);
   const [facebookSearchLink, setFacebookSearchLink] = useState('');
+  const [linkedinComprehensive, setLinkedinComprehensive] = useState(true);
+  const [linkedinSearchLink, setLinkedinSearchLink] = useState('');
   const [queriesRun, setQueriesRun] = useState(0);
   const [queryStats, setQueryStats] = useState<{ query: string; found: number; new: number }[]>([]);
 
@@ -783,12 +791,156 @@ export default function DataCollectionPage() {
     }
   };
 
+  // Search LinkedIn using batched multi-query mode (similar to Google Maps comprehensive flow)
+  const searchLinkedIn = async () => {
+    setIsSearching(true);
+    setSaveResult(null);
+    setResults([]);
+    setSearchStats(null);
+    setQueryStats([]);
+    setQueriesRun(0);
+    setProgressMsg(language === 'ar' ? 'جاري البحث في LinkedIn...' : 'Searching LinkedIn...');
+    setProgressPercent(0);
+
+    const selectedArea = gmapsArea && gmapsArea !== 'all' ? gmapsArea : '';
+    const searchQuery = (gmapsQuery || `${industry} ${selectedArea || gmapsCity}`).trim();
+    const fallbackSearchLink = buildLinkedInSearchUrl(searchQuery);
+    const effectiveSearchLink = linkedinSearchLink.trim() || fallbackSearchLink;
+    if (!linkedinSearchLink.trim() && effectiveSearchLink) {
+      setLinkedinSearchLink(effectiveSearchLink);
+    }
+
+    try {
+      if (!searchQuery) {
+        throw new Error(language === 'ar' ? 'يرجى إدخال كلمة بحث' : 'Please enter a search query');
+      }
+
+      const buildRes = await fetch('/api/scrape/linkedin/build-queries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: searchQuery,
+          city: gmapsCity,
+          area: selectedArea,
+          comprehensive: linkedinComprehensive,
+        }),
+      });
+
+      if (!buildRes.ok) {
+        const err = await buildRes.json();
+        throw new Error(err.error || (language === 'ar' ? 'فشل تجهيز الاستعلامات' : 'Failed to build queries'));
+      }
+
+      const buildData = await buildRes.json();
+      const queries: string[] = buildData.queries || [];
+      if (queries.length === 0) {
+        throw new Error(language === 'ar' ? 'لا توجد استعلامات للبحث' : 'No queries to search');
+      }
+
+      const allLeads: ScrapedLead[] = [];
+      const seenKeys = new Set<string>();
+      const stats: { query: string; found: number; new: number }[] = [];
+
+      const runQuery = async (queryText: string, engineHint: number): Promise<{ leads: ScrapedLead[]; total: number } | null> => {
+        try {
+          const res = await fetch('/api/scrape/linkedin/search-single', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: queryText, engineHint }),
+          });
+          if (res.ok) return await res.json();
+        } catch {
+          // ignore per-query failure and continue
+        }
+        return null;
+      };
+
+      for (let i = 0; i < queries.length; i++) {
+        const queryText = queries[i];
+        const label = queryText.length > 45 ? `${queryText.slice(0, 45)}...` : queryText;
+
+        setProgressMsg(`${i + 1}/${queries.length} — ${label}`);
+        setProgressPercent(Math.round((i / queries.length) * 100));
+
+        if (i > 0) {
+          const delay = 800 + Math.floor(Math.random() * 1200);
+          await new Promise(r => setTimeout(r, delay));
+        }
+
+        const engineHint = (i % 3) + 1;
+        const data = await runQuery(queryText, engineHint);
+        if (!data) {
+          stats.push({ query: label, found: 0, new: 0 });
+          setQueryStats([...stats]);
+          setQueriesRun(i + 1);
+          continue;
+        }
+
+        const querySearchLink = buildLinkedInSearchUrl(queryText);
+        let newCountPerQuery = 0;
+        for (const lead of data.leads || []) {
+          const phoneKey = (lead.phone || '').replace(/[\s\-]+/g, '').trim();
+          const nameKey = (lead.company_name || '').toLowerCase().trim();
+          const dedupeKey = phoneKey || nameKey;
+          if (!dedupeKey || seenKeys.has(dedupeKey)) continue;
+          seenKeys.add(dedupeKey);
+          allLeads.push({
+            ...lead,
+            industry: lead.industry || industry,
+            city: lead.city || selectedArea || gmapsCity,
+            search_link: lead.search_link || querySearchLink || effectiveSearchLink,
+            selected: !lead.alreadySaved,
+          });
+          newCountPerQuery++;
+        }
+
+        setResults([...allLeads]);
+        stats.push({ query: label, found: data.total || 0, new: newCountPerQuery });
+        setQueryStats([...stats]);
+        setQueriesRun(i + 1);
+      }
+
+      setProgressPercent(100);
+      const withPhone = allLeads.filter(l => l.phone).length;
+      const newCount = allLeads.filter(l => !l.alreadySaved).length;
+      const alreadySaved = allLeads.filter(l => l.alreadySaved).length;
+      setSearchStats({
+        total: allLeads.length,
+        totalScraped: allLeads.length,
+        withPhone,
+        newLeads: newCount,
+        alreadySaved,
+        queriesRun: queries.length,
+        source: language === 'ar'
+          ? (linkedinComprehensive ? 'LinkedIn (بحث شامل)' : 'LinkedIn')
+          : (linkedinComprehensive ? 'LinkedIn (Comprehensive)' : 'LinkedIn'),
+      });
+
+      if (allLeads.length > 0) {
+        toast.success(language === 'ar'
+          ? `تم العثور على ${newCount} عميل جديد من LinkedIn`
+          : `Found ${newCount} new leads from LinkedIn`);
+      } else {
+        toast.warning(language === 'ar'
+          ? 'لم يتم العثور على نتائج — جرّب كلمات مختلفة'
+          : 'No results found — try different keywords');
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : (language === 'ar' ? 'خطأ في البحث' : 'Search failed');
+      toast.error(msg);
+    } finally {
+      setIsSearching(false);
+      setProgressMsg('');
+    }
+  };
+
   // Save selected leads to database
   const saveLeads = async () => {
     const selectedArea = gmapsArea && gmapsArea !== 'all' ? gmapsArea : '';
     const fallbackSearchQuery = (gmapsQuery || `${industry} في ${selectedArea || gmapsCity}`).trim();
     const fallbackSearchLink = gmapsSearchLink.trim() || buildGoogleMapsSearchUrl(fallbackSearchQuery);
     const fallbackFacebookSearchLink = facebookSearchLink.trim() || buildFacebookSearchUrl(fallbackSearchQuery);
+    const fallbackLinkedInSearchLink = linkedinSearchLink.trim() || buildLinkedInSearchUrl(fallbackSearchQuery);
     const selected = results
       .filter(r => r.selected)
       .map((lead) => {
@@ -797,6 +949,9 @@ export default function DataCollectionPage() {
         }
         if (lead.source === 'facebook') {
           return { ...lead, search_link: lead.search_link || fallbackFacebookSearchLink };
+        }
+        if (lead.source === 'linkedin') {
+          return { ...lead, search_link: lead.search_link || fallbackLinkedInSearchLink };
         }
         return lead;
       });
@@ -895,6 +1050,15 @@ export default function DataCollectionPage() {
         >
           <Globe className="h-4 w-4" />
           Facebook
+        </Button>
+        <Button
+          variant={searchSource === 'linkedin' ? 'default' : 'outline'}
+          onClick={() => setSearchSource('linkedin')}
+          className="gap-2 flex-1"
+          disabled={isSearching}
+        >
+          <Globe className="h-4 w-4" />
+          LinkedIn
         </Button>
         <Button
           variant={searchSource === '140online' ? 'default' : 'outline'}
@@ -1109,6 +1273,138 @@ export default function DataCollectionPage() {
               <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
                 <div
                   className="bg-gradient-to-r from-indigo-500 to-blue-500 h-full rounded-full transition-all duration-500 ease-out"
+                  style={{ width: `${Math.max(progressPercent, 2)}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+      )}
+
+      {/* LinkedIn Search */}
+      {searchSource === 'linkedin' && (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Globe className="h-5 w-5 text-sky-600" />
+            {language === 'ar' ? 'البحث في LinkedIn' : 'Search LinkedIn'}
+          </CardTitle>
+          <CardDescription>
+            {language === 'ar'
+              ? 'بحث شامل داخل LinkedIn باستخدام كلمات مفتاحية متعددة لتوسيع النتائج'
+              : 'Comprehensive LinkedIn search using multiple keyword variations for wider coverage'}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-2 md:col-span-2">
+              <Label>{language === 'ar' ? 'كلمة البحث' : 'Search Query'}</Label>
+              <Input
+                placeholder={language === 'ar' ? 'مثال: شركات برمجيات، مقاولات، عيادات...' : 'e.g. software companies, construction, clinics...'}
+                value={gmapsQuery}
+                onChange={e => setGmapsQuery(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {language === 'ar'
+                  ? 'سيتم البحث في LinkedIn بالكامل باستخدام نفس الكلمة بعدة صيغ'
+                  : 'Will search across LinkedIn using multiple query variants'}
+              </p>
+
+              <div className="space-y-2 pt-2">
+                <Label>{language === 'ar' ? 'رابط البحث' : 'Search Link'}</Label>
+                <Input
+                  placeholder={language === 'ar' ? 'https://www.linkedin.com/search/...' : 'https://www.linkedin.com/search/...'}
+                  value={linkedinSearchLink}
+                  onChange={e => setLinkedinSearchLink(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {language === 'ar'
+                    ? 'يتم حفظ هذا الرابط مع النتائج داخل قاعدة البيانات'
+                    : 'This link is saved with results in the database'}
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>{language === 'ar' ? 'المدينة (اختياري)' : 'City (optional)'}</Label>
+              <Select value={gmapsCity} onValueChange={(v) => { setGmapsCity(v); setGmapsArea(''); }}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CITIES_AR.map(c => (
+                    <SelectItem key={c} value={c}>{c}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {CITY_AREAS[gmapsCity] && CITY_AREAS[gmapsCity].length > 0 && (
+            <div className="space-y-2">
+              <Label>{language === 'ar' ? 'المنطقة / الحي (اختياري)' : 'Area / Neighborhood (optional)'}</Label>
+              <Select value={gmapsArea} onValueChange={setGmapsArea}>
+                <SelectTrigger>
+                  <SelectValue placeholder={language === 'ar' ? 'كل المناطق' : 'All areas'} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{language === 'ar' ? 'كل المناطق' : 'All areas'}</SelectItem>
+                  {CITY_AREAS[gmapsCity].map(a => (
+                    <SelectItem key={a} value={a}>{a}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between p-4 rounded-xl border bg-gradient-to-r from-sky-500/5 to-cyan-500/5">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-sky-600/10">
+                <Layers className="h-5 w-5 text-sky-600" />
+              </div>
+              <div>
+                <Label htmlFor="linkedin-comprehensive" className="font-semibold cursor-pointer">
+                  {language === 'ar' ? 'بحث شامل في LinkedIn' : 'Comprehensive LinkedIn Search'}
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {language === 'ar'
+                    ? 'يقسم البحث إلى استعلامات متعددة لتفادي حدود النتائج'
+                    : 'Splits search into multiple queries to avoid result limits'}
+                </p>
+              </div>
+            </div>
+            <Switch
+              id="linkedin-comprehensive"
+              checked={linkedinComprehensive}
+              onCheckedChange={setLinkedinComprehensive}
+            />
+          </div>
+
+          <Button onClick={searchLinkedIn} disabled={isSearching} className="gap-2" size="lg">
+            {isSearching ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : linkedinComprehensive ? (
+              <Layers className="h-4 w-4" />
+            ) : (
+              <Search className="h-4 w-4" />
+            )}
+            {isSearching
+              ? (language === 'ar' ? 'جاري البحث...' : 'Searching...')
+              : (language === 'ar'
+                ? (linkedinComprehensive ? 'بحث شامل في LinkedIn' : 'بحث في LinkedIn')
+                : (linkedinComprehensive ? 'Comprehensive LinkedIn Search' : 'Search LinkedIn'))}
+          </Button>
+
+          {isSearching && progressMsg && (
+            <div className="space-y-2 p-4 rounded-xl border bg-gradient-to-r from-sky-500/5 to-cyan-500/5 animate-in fade-in">
+              <div className="flex items-center gap-2 text-sm">
+                <Loader2 className="h-4 w-4 animate-spin text-sky-600" />
+                <span className="font-medium">{progressMsg}</span>
+              </div>
+              <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
+                <div
+                  className="bg-gradient-to-r from-sky-500 to-cyan-500 h-full rounded-full transition-all duration-500 ease-out"
                   style={{ width: `${Math.max(progressPercent, 2)}%` }}
                 />
               </div>
