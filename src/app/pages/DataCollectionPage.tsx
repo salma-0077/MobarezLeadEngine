@@ -215,6 +215,38 @@ const buildFacebookSearchUrl = (query: string) => {
   return `https://www.facebook.com/search/top?q=${encodeURIComponent(normalizedQuery)}`;
 };
 
+const normalizeExternalUrl = (rawUrl: string) => {
+  const candidate = rawUrl.trim();
+  if (!candidate) return '';
+  if (/^https?:\/\//i.test(candidate)) return candidate;
+  if (candidate.startsWith('//')) return `https:${candidate}`;
+  if (/^(?:www\.)?[a-z0-9][a-z0-9.-]+\.[a-z]{2,}(?:[/?#].*)?$/i.test(candidate)) {
+    return `https://${candidate}`;
+  }
+  return '';
+};
+
+const isFacebookSearchResultsUrl = (url: string) => /facebook\.com\/search\//i.test(url);
+
+const buildPreferredFacebookLeadLink = (
+  lead: Pick<ScrapedLead, 'website' | 'company_name' | 'search_link'>,
+  fallbackQuery: string,
+  locationHint: string,
+) => {
+  const companyWebsite = normalizeExternalUrl(lead.website || '');
+  if (companyWebsite) return companyWebsite;
+
+  const existingLink = (lead.search_link || '').trim();
+  if (existingLink && !isFacebookSearchResultsUrl(existingLink)) return existingLink;
+
+  const companyName = (lead.company_name || '').trim();
+  const companyQuery = [companyName, locationHint.trim()].filter(Boolean).join(' ').trim();
+  const companySearchLink = buildFacebookSearchUrl(companyQuery || companyName);
+  if (companySearchLink) return companySearchLink;
+
+  return existingLink || buildFacebookSearchUrl(fallbackQuery);
+};
+
 const buildLinkedInSearchUrl = (query: string) => {
   const normalizedQuery = query.trim();
   if (!normalizedQuery) return '';
@@ -780,7 +812,7 @@ export default function DataCollectionPage() {
             ...lead,
             industry: lead.industry || industry,
             city: lead.city || selectedArea || gmapsCity,
-            search_link: lead.search_link || querySearchLink || effectiveSearchLink,
+            search_link: buildPreferredFacebookLeadLink(lead, queryText, selectedArea || gmapsCity) || querySearchLink || effectiveSearchLink,
             selected: !!lead.phone && !lead.alreadySaved,
           });
           newCountPerQuery++;
@@ -819,7 +851,7 @@ export default function DataCollectionPage() {
               ...lead,
               industry: lead.industry || industry,
               city: lead.city || selectedArea || gmapsCity,
-              search_link: lead.search_link || querySearchLink || effectiveSearchLink,
+              search_link: buildPreferredFacebookLeadLink(lead, item.queryText, selectedArea || gmapsCity) || querySearchLink || effectiveSearchLink,
               selected: !!lead.phone && !lead.alreadySaved,
             });
             newCountPerRetry++;
@@ -1082,7 +1114,12 @@ export default function DataCollectionPage() {
           return { ...lead, search_link: lead.search_link || fallbackSearchLink };
         }
         if (lead.source === 'facebook') {
-          return { ...lead, search_link: lead.search_link || fallbackFacebookSearchLink };
+          const preferredFacebookLink = buildPreferredFacebookLeadLink(
+            lead,
+            fallbackSearchQuery,
+            selectedArea || gmapsCity,
+          );
+          return { ...lead, search_link: preferredFacebookLink || fallbackFacebookSearchLink };
         }
         if (lead.source === 'linkedin') {
           return { ...lead, search_link: lead.search_link || fallbackLinkedInSearchLink };
@@ -2081,7 +2118,14 @@ export default function DataCollectionPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {visibleRows.map(({ lead, index }) => (
+                  {visibleRows.map(({ lead, index }) => {
+                    const selectedArea = gmapsArea && gmapsArea !== 'all' ? gmapsArea : gmapsCity;
+                    const fallbackFacebookQuery = (gmapsQuery || `${industry} ${selectedArea}`).trim();
+                    const leadLink = lead.source === 'facebook'
+                      ? buildPreferredFacebookLeadLink(lead, fallbackFacebookQuery, selectedArea)
+                      : lead.search_link || normalizeExternalUrl(lead.website || '');
+
+                    return (
                     <TableRow key={index} className={lead.alreadySaved ? 'opacity-40 bg-muted/30' : lead.selected ? '' : 'opacity-50'}>
                       <TableCell>
                         <Checkbox
@@ -2122,9 +2166,9 @@ export default function DataCollectionPage() {
                         ) : '—'}
                       </TableCell>
                       <TableCell>
-                        {lead.search_link ? (
+                        {leadLink ? (
                           <a
-                            href={lead.search_link}
+                            href={leadLink}
                             target="_blank"
                             rel="noreferrer"
                             className="inline-flex items-center gap-1 text-blue-600 hover:underline"
@@ -2139,7 +2183,8 @@ export default function DataCollectionPage() {
                         <Badge variant="secondary">{lead.industry}</Badge>
                       </TableCell>
                     </TableRow>
-                  ))}
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>
