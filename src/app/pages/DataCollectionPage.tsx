@@ -237,8 +237,16 @@ export default function DataCollectionPage() {
   const [comprehensive, setComprehensive] = useState(false);
   const [facebookComprehensive, setFacebookComprehensive] = useState(true);
   const [facebookSearchLink, setFacebookSearchLink] = useState('');
+  const [facebookPreciseMode, setFacebookPreciseMode] = useState(false);
+  const [facebookIncludeKeywords, setFacebookIncludeKeywords] = useState('');
+  const [facebookExcludeKeywords, setFacebookExcludeKeywords] = useState('');
+  const [facebookResultView, setFacebookResultView] = useState<'all' | 'withPhone' | 'withoutPhone'>('all');
   const [linkedinComprehensive, setLinkedinComprehensive] = useState(true);
   const [linkedinSearchLink, setLinkedinSearchLink] = useState('');
+  const [linkedinPreciseMode, setLinkedinPreciseMode] = useState(false);
+  const [linkedinIncludeKeywords, setLinkedinIncludeKeywords] = useState('');
+  const [linkedinExcludeKeywords, setLinkedinExcludeKeywords] = useState('');
+  const [linkedinResultView, setLinkedinResultView] = useState<'all' | 'withPhone' | 'withoutPhone'>('all');
   const [queriesRun, setQueriesRun] = useState(0);
   const [queryStats, setQueryStats] = useState<{ query: string; found: number; new: number }[]>([]);
 
@@ -246,14 +254,32 @@ export default function DataCollectionPage() {
   const [results, setResults] = useState<ScrapedLead[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [searchStats, setSearchStats] = useState<{ total: number; withPhone: number; source: string; totalScraped?: number; newLeads?: number; alreadySaved?: number; queriesRun?: number } | null>(null);
+  const [searchStats, setSearchStats] = useState<{ total: number; withPhone: number; withoutPhone?: number; source: string; totalScraped?: number; newLeads?: number; alreadySaved?: number; queriesRun?: number } | null>(null);
   const [saveResult, setSaveResult] = useState<{ success: number; duplicates: number; noPhone: number; failed: number } | null>(null);
   const [assignTo, setAssignTo] = useState('');
   const [progressMsg, setProgressMsg] = useState('');
   const [progressPercent, setProgressPercent] = useState(0);
   const [maxPages, setMaxPages] = useState(5);
 
-  const selectedCount = results.filter(r => r.selected).length;
+  const hasFacebookResults = results.some(r => r.source === 'facebook');
+  const hasLinkedInResults = results.some(r => r.source === 'linkedin');
+  const visibleRows = results
+    .map((lead, index) => ({ lead, index }))
+    .filter(({ lead }) => {
+      if (lead.source === 'facebook' && hasFacebookResults) {
+        if (facebookResultView === 'withPhone') return !!lead.phone;
+        if (facebookResultView === 'withoutPhone') return !lead.phone;
+        return true;
+      }
+      if (lead.source === 'linkedin' && hasLinkedInResults) {
+        if (linkedinResultView === 'withPhone') return !!lead.phone;
+        if (linkedinResultView === 'withoutPhone') return !lead.phone;
+        return true;
+      }
+      return true;
+    });
+  const visibleIndexes = visibleRows.map(r => r.index);
+  const visibleSelectedCount = visibleRows.filter(r => r.lead.selected).length;
   const salesUsers = users.filter(u => u.role === 'sales' || u.role === 'admin');
 
   // Search Google Maps — uses POST endpoint with frontend-managed batching for comprehensive search
@@ -656,6 +682,7 @@ export default function DataCollectionPage() {
     setSearchStats(null);
     setQueryStats([]);
     setQueriesRun(0);
+    setFacebookResultView('all');
     setProgressMsg(language === 'ar' ? 'جاري البحث في Facebook...' : 'Searching Facebook...');
     setProgressPercent(0);
 
@@ -671,6 +698,9 @@ export default function DataCollectionPage() {
       if (!searchQuery) {
         throw new Error(language === 'ar' ? 'يرجى إدخال كلمة بحث' : 'Please enter a search query');
       }
+      if (facebookPreciseMode && !selectedArea && !gmapsCity.trim()) {
+        throw new Error(language === 'ar' ? 'في وضع البحث الدقيق يجب تحديد المدينة أو المنطقة' : 'In precise mode, city or area is required');
+      }
 
       const buildRes = await fetch('/api/scrape/facebook/build-queries', {
         method: 'POST',
@@ -680,6 +710,9 @@ export default function DataCollectionPage() {
           city: gmapsCity,
           area: selectedArea,
           comprehensive: facebookComprehensive,
+          preciseMode: facebookPreciseMode,
+          includeKeywords: facebookIncludeKeywords,
+          excludeKeywords: facebookExcludeKeywords,
         }),
       });
 
@@ -697,6 +730,7 @@ export default function DataCollectionPage() {
       const allLeads: ScrapedLead[] = [];
       const seenKeys = new Set<string>();
       const stats: { query: string; found: number; new: number }[] = [];
+      const failedQueries: { queryText: string; label: string; engineUsed: number; statIdx: number }[] = [];
 
       const runQuery = async (queryText: string, engineHint: number): Promise<{ leads: ScrapedLead[]; total: number } | null> => {
         try {
@@ -726,8 +760,9 @@ export default function DataCollectionPage() {
 
         const engineHint = (i % 3) + 1;
         const data = await runQuery(queryText, engineHint);
-        if (!data) {
+        if (!data || (data.total || 0) === 0) {
           stats.push({ query: label, found: 0, new: 0 });
+          failedQueries.push({ queryText, label, engineUsed: engineHint, statIdx: stats.length - 1 });
           setQueryStats([...stats]);
           setQueriesRun(i + 1);
           continue;
@@ -746,7 +781,7 @@ export default function DataCollectionPage() {
             industry: lead.industry || industry,
             city: lead.city || selectedArea || gmapsCity,
             search_link: lead.search_link || querySearchLink || effectiveSearchLink,
-            selected: !lead.alreadySaved,
+            selected: !!lead.phone && !lead.alreadySaved,
           });
           newCountPerQuery++;
         }
@@ -757,26 +792,71 @@ export default function DataCollectionPage() {
         setQueriesRun(i + 1);
       }
 
+      // Smart retry for zero-result queries using another engine with longer delay.
+      if (failedQueries.length > 0) {
+        const retryBatch = failedQueries.slice(0, Math.min(failedQueries.length, 30));
+        for (let r = 0; r < retryBatch.length; r++) {
+          const item = retryBatch[r];
+          const retryEngine = item.engineUsed === 3 ? 1 : item.engineUsed + 1;
+          const delay = 1500 + Math.floor(Math.random() * 1800);
+          await new Promise(res => setTimeout(res, delay));
+          setProgressMsg(
+            `${language === 'ar' ? 'إعادة' : 'Retry'} ${r + 1}/${retryBatch.length} — ${item.label}`,
+          );
+
+          const data = await runQuery(item.queryText, retryEngine);
+          if (!data || (data.total || 0) === 0) continue;
+
+          const querySearchLink = buildFacebookSearchUrl(item.queryText);
+          let newCountPerRetry = 0;
+          for (const lead of data.leads || []) {
+            const phoneKey = (lead.phone || '').replace(/[\s\-]+/g, '').trim();
+            const nameKey = (lead.company_name || '').toLowerCase().trim();
+            const dedupeKey = phoneKey || nameKey;
+            if (!dedupeKey || seenKeys.has(dedupeKey)) continue;
+            seenKeys.add(dedupeKey);
+            allLeads.push({
+              ...lead,
+              industry: lead.industry || industry,
+              city: lead.city || selectedArea || gmapsCity,
+              search_link: lead.search_link || querySearchLink || effectiveSearchLink,
+              selected: !!lead.phone && !lead.alreadySaved,
+            });
+            newCountPerRetry++;
+          }
+
+          stats[item.statIdx] = {
+            query: item.label,
+            found: data.total || 0,
+            new: newCountPerRetry,
+          };
+          setResults([...allLeads]);
+          setQueryStats([...stats]);
+        }
+      }
+
       setProgressPercent(100);
       const withPhone = allLeads.filter(l => l.phone).length;
+      const withoutPhone = allLeads.length - withPhone;
       const newCount = allLeads.filter(l => !l.alreadySaved).length;
       const alreadySaved = allLeads.filter(l => l.alreadySaved).length;
       setSearchStats({
         total: allLeads.length,
         totalScraped: allLeads.length,
         withPhone,
+        withoutPhone,
         newLeads: newCount,
         alreadySaved,
         queriesRun: queries.length,
         source: language === 'ar'
-          ? (facebookComprehensive ? 'Facebook (بحث شامل)' : 'Facebook')
-          : (facebookComprehensive ? 'Facebook (Comprehensive)' : 'Facebook'),
+          ? (facebookPreciseMode ? 'Facebook (بحث دقيق)' : (facebookComprehensive ? 'Facebook (بحث شامل)' : 'Facebook'))
+          : (facebookPreciseMode ? 'Facebook (Precise)' : (facebookComprehensive ? 'Facebook (Comprehensive)' : 'Facebook')),
       });
 
       if (allLeads.length > 0) {
         toast.success(language === 'ar'
-          ? `تم العثور على ${newCount} عميل جديد من Facebook`
-          : `Found ${newCount} new leads from Facebook`);
+          ? `تم العثور على ${newCount} عميل جديد من Facebook (${withPhone} برقم هاتف)`
+          : `Found ${newCount} new leads from Facebook (${withPhone} with phone)`);
       } else {
         toast.warning(language === 'ar'
           ? 'لم يتم العثور على نتائج — جرّب كلمات مختلفة'
@@ -799,6 +879,7 @@ export default function DataCollectionPage() {
     setSearchStats(null);
     setQueryStats([]);
     setQueriesRun(0);
+    setLinkedinResultView('all');
     setProgressMsg(language === 'ar' ? 'جاري البحث في LinkedIn...' : 'Searching LinkedIn...');
     setProgressPercent(0);
 
@@ -814,6 +895,9 @@ export default function DataCollectionPage() {
       if (!searchQuery) {
         throw new Error(language === 'ar' ? 'يرجى إدخال كلمة بحث' : 'Please enter a search query');
       }
+      if (linkedinPreciseMode && !selectedArea && !gmapsCity.trim()) {
+        throw new Error(language === 'ar' ? 'في وضع البحث الدقيق يجب تحديد المدينة أو المنطقة' : 'In precise mode, city or area is required');
+      }
 
       const buildRes = await fetch('/api/scrape/linkedin/build-queries', {
         method: 'POST',
@@ -823,6 +907,9 @@ export default function DataCollectionPage() {
           city: gmapsCity,
           area: selectedArea,
           comprehensive: linkedinComprehensive,
+          preciseMode: linkedinPreciseMode,
+          includeKeywords: linkedinIncludeKeywords,
+          excludeKeywords: linkedinExcludeKeywords,
         }),
       });
 
@@ -840,6 +927,7 @@ export default function DataCollectionPage() {
       const allLeads: ScrapedLead[] = [];
       const seenKeys = new Set<string>();
       const stats: { query: string; found: number; new: number }[] = [];
+      const failedQueries: { queryText: string; label: string; engineUsed: number; statIdx: number }[] = [];
 
       const runQuery = async (queryText: string, engineHint: number): Promise<{ leads: ScrapedLead[]; total: number } | null> => {
         try {
@@ -869,8 +957,9 @@ export default function DataCollectionPage() {
 
         const engineHint = (i % 3) + 1;
         const data = await runQuery(queryText, engineHint);
-        if (!data) {
+        if (!data || (data.total || 0) === 0) {
           stats.push({ query: label, found: 0, new: 0 });
+          failedQueries.push({ queryText, label, engineUsed: engineHint, statIdx: stats.length - 1 });
           setQueryStats([...stats]);
           setQueriesRun(i + 1);
           continue;
@@ -889,7 +978,7 @@ export default function DataCollectionPage() {
             industry: lead.industry || industry,
             city: lead.city || selectedArea || gmapsCity,
             search_link: lead.search_link || querySearchLink || effectiveSearchLink,
-            selected: !lead.alreadySaved,
+            selected: !!lead.phone && !lead.alreadySaved,
           });
           newCountPerQuery++;
         }
@@ -900,26 +989,71 @@ export default function DataCollectionPage() {
         setQueriesRun(i + 1);
       }
 
+      // Smart retry for zero-result queries using another engine with longer delay.
+      if (failedQueries.length > 0) {
+        const retryBatch = failedQueries.slice(0, Math.min(failedQueries.length, 30));
+        for (let r = 0; r < retryBatch.length; r++) {
+          const item = retryBatch[r];
+          const retryEngine = item.engineUsed === 3 ? 1 : item.engineUsed + 1;
+          const delay = 1500 + Math.floor(Math.random() * 1800);
+          await new Promise(res => setTimeout(res, delay));
+          setProgressMsg(
+            `${language === 'ar' ? 'إعادة' : 'Retry'} ${r + 1}/${retryBatch.length} — ${item.label}`,
+          );
+
+          const data = await runQuery(item.queryText, retryEngine);
+          if (!data || (data.total || 0) === 0) continue;
+
+          const querySearchLink = buildLinkedInSearchUrl(item.queryText);
+          let newCountPerRetry = 0;
+          for (const lead of data.leads || []) {
+            const phoneKey = (lead.phone || '').replace(/[\s\-]+/g, '').trim();
+            const nameKey = (lead.company_name || '').toLowerCase().trim();
+            const dedupeKey = phoneKey || nameKey;
+            if (!dedupeKey || seenKeys.has(dedupeKey)) continue;
+            seenKeys.add(dedupeKey);
+            allLeads.push({
+              ...lead,
+              industry: lead.industry || industry,
+              city: lead.city || selectedArea || gmapsCity,
+              search_link: lead.search_link || querySearchLink || effectiveSearchLink,
+              selected: !!lead.phone && !lead.alreadySaved,
+            });
+            newCountPerRetry++;
+          }
+
+          stats[item.statIdx] = {
+            query: item.label,
+            found: data.total || 0,
+            new: newCountPerRetry,
+          };
+          setResults([...allLeads]);
+          setQueryStats([...stats]);
+        }
+      }
+
       setProgressPercent(100);
       const withPhone = allLeads.filter(l => l.phone).length;
+      const withoutPhone = allLeads.length - withPhone;
       const newCount = allLeads.filter(l => !l.alreadySaved).length;
       const alreadySaved = allLeads.filter(l => l.alreadySaved).length;
       setSearchStats({
         total: allLeads.length,
         totalScraped: allLeads.length,
         withPhone,
+        withoutPhone,
         newLeads: newCount,
         alreadySaved,
         queriesRun: queries.length,
         source: language === 'ar'
-          ? (linkedinComprehensive ? 'LinkedIn (بحث شامل)' : 'LinkedIn')
-          : (linkedinComprehensive ? 'LinkedIn (Comprehensive)' : 'LinkedIn'),
+          ? (linkedinPreciseMode ? 'LinkedIn (بحث دقيق)' : (linkedinComprehensive ? 'LinkedIn (بحث شامل)' : 'LinkedIn'))
+          : (linkedinPreciseMode ? 'LinkedIn (Precise)' : (linkedinComprehensive ? 'LinkedIn (Comprehensive)' : 'LinkedIn')),
       });
 
       if (allLeads.length > 0) {
         toast.success(language === 'ar'
-          ? `تم العثور على ${newCount} عميل جديد من LinkedIn`
-          : `Found ${newCount} new leads from LinkedIn`);
+          ? `تم العثور على ${newCount} عميل جديد من LinkedIn (${withPhone} برقم هاتف)`
+          : `Found ${newCount} new leads from LinkedIn (${withPhone} with phone)`);
       } else {
         toast.warning(language === 'ar'
           ? 'لم يتم العثور على نتائج — جرّب كلمات مختلفة'
@@ -1001,9 +1135,9 @@ export default function DataCollectionPage() {
     }
   };
 
-  // Toggle all selections
-  const toggleAll = (checked: boolean) => {
-    setResults(prev => prev.map(r => ({ ...r, selected: checked })));
+  const toggleVisibleAll = (checked: boolean) => {
+    const visibleSet = new Set(visibleIndexes);
+    setResults(prev => prev.map((r, i) => (visibleSet.has(i) ? { ...r, selected: checked } : r)));
   };
 
   const toggleOne = (idx: number) => {
@@ -1195,7 +1329,7 @@ export default function DataCollectionPage() {
             </div>
 
             <div className="space-y-2">
-              <Label>{language === 'ar' ? 'المدينة (اختياري)' : 'City (optional)'}</Label>
+              <Label>{language === 'ar' ? (facebookPreciseMode ? 'المدينة (مطلوب في الدقيق)' : 'المدينة (اختياري)') : (facebookPreciseMode ? 'City (required in precise mode)' : 'City (optional)')}</Label>
               <Select value={gmapsCity} onValueChange={(v) => { setGmapsCity(v); setGmapsArea(''); }}>
                 <SelectTrigger>
                   <SelectValue />
@@ -1226,6 +1360,58 @@ export default function DataCollectionPage() {
             </div>
           )}
 
+          <div className="flex items-center justify-between p-4 rounded-xl border bg-gradient-to-r from-purple-500/5 to-pink-500/5">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-purple-600/10">
+                <MapPin className="h-5 w-5 text-purple-600" />
+              </div>
+              <div>
+                <Label htmlFor="facebook-precise" className="font-semibold cursor-pointer">
+                  {language === 'ar' ? 'بحث دقيق (Precision Mode)' : 'Precise Search Mode'}
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {language === 'ar'
+                    ? 'يركّز على صفحات الشركات الرسمية ويقلل النتائج غير الدقيقة'
+                    : 'Focuses on official business pages and reduces noisy results'}
+                </p>
+              </div>
+            </div>
+            <Switch
+              id="facebook-precise"
+              checked={facebookPreciseMode}
+              onCheckedChange={setFacebookPreciseMode}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>{language === 'ar' ? 'كلمات تضمين إضافية (اختياري)' : 'Include Keywords (optional)'}</Label>
+              <Input
+                placeholder={language === 'ar' ? 'مثال: واتساب, الصفحة الرسمية, إدارة' : 'e.g. whatsapp, official page, management'}
+                value={facebookIncludeKeywords}
+                onChange={e => setFacebookIncludeKeywords(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {language === 'ar'
+                  ? 'افصل الكلمات بفاصلة أو سطر جديد لزيادة دقة الاستهداف'
+                  : 'Separate keywords by comma/new line for better targeting'}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>{language === 'ar' ? 'كلمات استبعاد (اختياري)' : 'Exclude Keywords (optional)'}</Label>
+              <Input
+                placeholder={language === 'ar' ? 'مثال: وظائف, جروب, career' : 'e.g. jobs, group, career'}
+                value={facebookExcludeKeywords}
+                onChange={e => setFacebookExcludeKeywords(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {language === 'ar'
+                  ? 'تساعد في استبعاد نتائج غير مرغوبة مثل الوظائف والجروبات'
+                  : 'Helps remove noisy results like jobs and groups'}
+              </p>
+            </div>
+          </div>
+
           <div className="flex items-center justify-between p-4 rounded-xl border bg-gradient-to-r from-indigo-500/5 to-blue-500/5">
             <div className="flex items-center gap-3">
               <div className="p-2 rounded-lg bg-indigo-600/10">
@@ -1252,7 +1438,7 @@ export default function DataCollectionPage() {
           <Button onClick={searchFacebook} disabled={isSearching} className="gap-2" size="lg">
             {isSearching ? (
               <Loader2 className="h-4 w-4 animate-spin" />
-            ) : facebookComprehensive ? (
+            ) : (facebookComprehensive || facebookPreciseMode) ? (
               <Layers className="h-4 w-4" />
             ) : (
               <Search className="h-4 w-4" />
@@ -1260,8 +1446,8 @@ export default function DataCollectionPage() {
             {isSearching
               ? (language === 'ar' ? 'جاري البحث...' : 'Searching...')
               : (language === 'ar'
-                ? (facebookComprehensive ? 'بحث شامل في Facebook' : 'بحث في Facebook')
-                : (facebookComprehensive ? 'Comprehensive Facebook Search' : 'Search Facebook'))}
+                ? (facebookPreciseMode ? 'بحث دقيق في Facebook' : (facebookComprehensive ? 'بحث شامل في Facebook' : 'بحث في Facebook'))
+                : (facebookPreciseMode ? 'Precise Facebook Search' : (facebookComprehensive ? 'Comprehensive Facebook Search' : 'Search Facebook')))}
           </Button>
 
           {isSearching && progressMsg && (
@@ -1327,7 +1513,7 @@ export default function DataCollectionPage() {
             </div>
 
             <div className="space-y-2">
-              <Label>{language === 'ar' ? 'المدينة (اختياري)' : 'City (optional)'}</Label>
+              <Label>{language === 'ar' ? (linkedinPreciseMode ? 'المدينة (مطلوب في الدقيق)' : 'المدينة (اختياري)') : (linkedinPreciseMode ? 'City (required in precise mode)' : 'City (optional)')}</Label>
               <Select value={gmapsCity} onValueChange={(v) => { setGmapsCity(v); setGmapsArea(''); }}>
                 <SelectTrigger>
                   <SelectValue />
@@ -1358,6 +1544,58 @@ export default function DataCollectionPage() {
             </div>
           )}
 
+          <div className="flex items-center justify-between p-4 rounded-xl border bg-gradient-to-r from-blue-500/5 to-indigo-500/5">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-blue-600/10">
+                <MapPin className="h-5 w-5 text-blue-600" />
+              </div>
+              <div>
+                <Label htmlFor="linkedin-precise" className="font-semibold cursor-pointer">
+                  {language === 'ar' ? 'بحث دقيق (Precision Mode)' : 'Precise Search Mode'}
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {language === 'ar'
+                    ? 'يركّز على صفحات الشركات/الملفات الرسمية ويقلل النتائج العامة'
+                    : 'Focuses on official company/profile pages and reduces generic noise'}
+                </p>
+              </div>
+            </div>
+            <Switch
+              id="linkedin-precise"
+              checked={linkedinPreciseMode}
+              onCheckedChange={setLinkedinPreciseMode}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>{language === 'ar' ? 'كلمات تضمين إضافية (اختياري)' : 'Include Keywords (optional)'}</Label>
+              <Input
+                placeholder={language === 'ar' ? 'مثال: company, official, hr, sales' : 'e.g. company, official, hr, sales'}
+                value={linkedinIncludeKeywords}
+                onChange={e => setLinkedinIncludeKeywords(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {language === 'ar'
+                  ? 'افصل الكلمات بفاصلة أو سطر جديد لرفع دقة النتائج'
+                  : 'Separate keywords by comma/new line to improve targeting'}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>{language === 'ar' ? 'كلمات استبعاد (اختياري)' : 'Exclude Keywords (optional)'}</Label>
+              <Input
+                placeholder={language === 'ar' ? 'مثال: jobs, hiring, internship' : 'e.g. jobs, hiring, internship'}
+                value={linkedinExcludeKeywords}
+                onChange={e => setLinkedinExcludeKeywords(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {language === 'ar'
+                  ? 'تقلل ضوضاء نتائج الوظائف والصفحات غير المستهدفة'
+                  : 'Reduces noise from jobs and non-target pages'}
+              </p>
+            </div>
+          </div>
+
           <div className="flex items-center justify-between p-4 rounded-xl border bg-gradient-to-r from-sky-500/5 to-cyan-500/5">
             <div className="flex items-center gap-3">
               <div className="p-2 rounded-lg bg-sky-600/10">
@@ -1384,7 +1622,7 @@ export default function DataCollectionPage() {
           <Button onClick={searchLinkedIn} disabled={isSearching} className="gap-2" size="lg">
             {isSearching ? (
               <Loader2 className="h-4 w-4 animate-spin" />
-            ) : linkedinComprehensive ? (
+            ) : (linkedinComprehensive || linkedinPreciseMode) ? (
               <Layers className="h-4 w-4" />
             ) : (
               <Search className="h-4 w-4" />
@@ -1392,8 +1630,8 @@ export default function DataCollectionPage() {
             {isSearching
               ? (language === 'ar' ? 'جاري البحث...' : 'Searching...')
               : (language === 'ar'
-                ? (linkedinComprehensive ? 'بحث شامل في LinkedIn' : 'بحث في LinkedIn')
-                : (linkedinComprehensive ? 'Comprehensive LinkedIn Search' : 'Search LinkedIn'))}
+                ? (linkedinPreciseMode ? 'بحث دقيق في LinkedIn' : (linkedinComprehensive ? 'بحث شامل في LinkedIn' : 'بحث في LinkedIn'))
+                : (linkedinPreciseMode ? 'Precise LinkedIn Search' : (linkedinComprehensive ? 'Comprehensive LinkedIn Search' : 'Search LinkedIn')))}
           </Button>
 
           {isSearching && progressMsg && (
@@ -1597,7 +1835,7 @@ export default function DataCollectionPage() {
 
       {/* Search Stats */}
       {searchStats && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className={`grid grid-cols-1 gap-4 ${searchStats.withoutPhone !== undefined ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
           <Card>
             <CardContent className="pt-6 flex items-center gap-3">
               <Database className="h-8 w-8 text-blue-600" />
@@ -1642,6 +1880,19 @@ export default function DataCollectionPage() {
               </div>
             </CardContent>
           </Card>
+          {searchStats.withoutPhone !== undefined && (
+            <Card>
+              <CardContent className="pt-6 flex items-center gap-3">
+                <AlertCircle className="h-8 w-8 text-orange-600" />
+                <div>
+                  <p className="text-2xl font-bold">{searchStats.withoutPhone}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {language === 'ar' ? 'بدون رقم هاتف' : 'No Phone Number'}
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
 
@@ -1702,9 +1953,79 @@ export default function DataCollectionPage() {
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
-              <CardTitle>
-                {language === 'ar' ? `النتائج (${results.length})` : `Results (${results.length})`}
-              </CardTitle>
+              <div className="space-y-2">
+                <CardTitle>
+                  {language === 'ar' ? `النتائج (${visibleRows.length}/${results.length})` : `Results (${visibleRows.length}/${results.length})`}
+                </CardTitle>
+                {hasFacebookResults && (
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={facebookResultView === 'all' ? 'default' : 'outline'}
+                      onClick={() => setFacebookResultView('all')}
+                    >
+                      {language === 'ar'
+                        ? `الكل (${results.filter(r => r.source === 'facebook').length})`
+                        : `All (${results.filter(r => r.source === 'facebook').length})`}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={facebookResultView === 'withPhone' ? 'default' : 'outline'}
+                      onClick={() => setFacebookResultView('withPhone')}
+                    >
+                      {language === 'ar'
+                        ? `مع هاتف (${results.filter(r => r.source === 'facebook' && !!r.phone).length})`
+                        : `With Phone (${results.filter(r => r.source === 'facebook' && !!r.phone).length})`}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={facebookResultView === 'withoutPhone' ? 'default' : 'outline'}
+                      onClick={() => setFacebookResultView('withoutPhone')}
+                    >
+                      {language === 'ar'
+                        ? `بدون هاتف (${results.filter(r => r.source === 'facebook' && !r.phone).length})`
+                        : `No Phone (${results.filter(r => r.source === 'facebook' && !r.phone).length})`}
+                    </Button>
+                  </div>
+                )}
+                {hasLinkedInResults && (
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={linkedinResultView === 'all' ? 'default' : 'outline'}
+                      onClick={() => setLinkedinResultView('all')}
+                    >
+                      {language === 'ar'
+                        ? `الكل (${results.filter(r => r.source === 'linkedin').length})`
+                        : `All (${results.filter(r => r.source === 'linkedin').length})`}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={linkedinResultView === 'withPhone' ? 'default' : 'outline'}
+                      onClick={() => setLinkedinResultView('withPhone')}
+                    >
+                      {language === 'ar'
+                        ? `مع هاتف (${results.filter(r => r.source === 'linkedin' && !!r.phone).length})`
+                        : `With Phone (${results.filter(r => r.source === 'linkedin' && !!r.phone).length})`}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={linkedinResultView === 'withoutPhone' ? 'default' : 'outline'}
+                      onClick={() => setLinkedinResultView('withoutPhone')}
+                    >
+                      {language === 'ar'
+                        ? `بدون هاتف (${results.filter(r => r.source === 'linkedin' && !r.phone).length})`
+                        : `No Phone (${results.filter(r => r.source === 'linkedin' && !r.phone).length})`}
+                    </Button>
+                  </div>
+                )}
+              </div>
               <div className="flex items-center gap-3">
                 {/* Assign To */}
                 <div className="flex items-center gap-2">
@@ -1725,7 +2046,7 @@ export default function DataCollectionPage() {
 
                 <Button
                   onClick={saveLeads}
-                  disabled={isSaving || selectedCount === 0}
+                  disabled={isSaving || visibleSelectedCount === 0}
                   className="gap-2"
                 >
                   {isSaving ? (
@@ -1734,8 +2055,8 @@ export default function DataCollectionPage() {
                     <Download className="h-4 w-4" />
                   )}
                   {language === 'ar'
-                    ? `حفظ ${selectedCount} عميل في قاعدة البيانات`
-                    : `Save ${selectedCount} leads to database`}
+                    ? `حفظ ${visibleSelectedCount} عميل في قاعدة البيانات`
+                    : `Save ${visibleSelectedCount} leads to database`}
                 </Button>
               </div>
             </div>
@@ -1747,8 +2068,8 @@ export default function DataCollectionPage() {
                   <TableRow>
                     <TableHead className="w-10">
                       <Checkbox
-                        checked={results.every(r => r.selected)}
-                        onCheckedChange={(checked) => toggleAll(!!checked)}
+                        checked={visibleRows.length > 0 && visibleRows.every(r => r.lead.selected)}
+                        onCheckedChange={(checked) => toggleVisibleAll(!!checked)}
                       />
                     </TableHead>
                     <TableHead>{language === 'ar' ? 'اسم الشركة' : 'Company'}</TableHead>
@@ -1760,12 +2081,12 @@ export default function DataCollectionPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {results.map((lead, idx) => (
-                    <TableRow key={idx} className={lead.alreadySaved ? 'opacity-40 bg-muted/30' : lead.selected ? '' : 'opacity-50'}>
+                  {visibleRows.map(({ lead, index }) => (
+                    <TableRow key={index} className={lead.alreadySaved ? 'opacity-40 bg-muted/30' : lead.selected ? '' : 'opacity-50'}>
                       <TableCell>
                         <Checkbox
                           checked={lead.selected}
-                          onCheckedChange={() => toggleOne(idx)}
+                          onCheckedChange={() => toggleOne(index)}
                           disabled={lead.alreadySaved}
                         />
                       </TableCell>

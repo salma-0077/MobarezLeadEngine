@@ -273,9 +273,32 @@ app.post('/api/scrape/gmaps/search', async (req, res) => {
   }
 });
 
-function buildFacebookScopedQuery(query) {
+function parseKeywordList(rawValue) {
+  return String(rawValue || '')
+    .split(/[\n,;|]+/g)
+    .map(k => k.trim())
+    .filter(Boolean)
+    .slice(0, 15);
+}
+
+function applyKeywordModifiers(baseQuery, includeKeywords = [], excludeKeywords = []) {
+  let query = String(baseQuery || '').trim();
+  if (!query) return '';
+
+  if (includeKeywords.length > 0) {
+    query += ` ${includeKeywords.join(' ')}`;
+  }
+  if (excludeKeywords.length > 0) {
+    query += ` ${excludeKeywords.map(k => (k.startsWith('-') ? k : `-${k}`)).join(' ')}`;
+  }
+
+  return query.trim();
+}
+
+function buildFacebookScopedQuery(query, enforceSite = true) {
   const normalized = String(query || '').trim();
   if (!normalized) return '';
+  if (!enforceSite) return normalized;
   if (/site:\s*facebook\.com/i.test(normalized) || /facebook\.com/i.test(normalized)) {
     return normalized;
   }
@@ -285,44 +308,122 @@ function buildFacebookScopedQuery(query) {
 // Build Facebook queries endpoint — returns query list for frontend-managed batching
 app.post('/api/scrape/facebook/build-queries', async (req, res) => {
   try {
-    const { query, city, area, comprehensive } = req.body;
+    const {
+      query,
+      city,
+      area,
+      comprehensive,
+      preciseMode,
+      includeKeywords,
+      excludeKeywords,
+    } = req.body;
     const baseQuery = String(query || '').trim();
     if (!baseQuery) return res.status(400).json({ error: 'query is required' });
 
+    const isPreciseMode = Boolean(preciseMode);
+    const cityName = String(city || '').trim();
     const selectedArea = area && area !== 'all' ? String(area).trim() : '';
-    const scopedBase = buildFacebookScopedQuery(baseQuery);
-    let queries = [scopedBase];
+    if (isPreciseMode && !selectedArea && !cityName) {
+      return res.status(400).json({ error: 'city or area is required in precise mode' });
+    }
+
+    const includeTerms = parseKeywordList(includeKeywords);
+    const userExcludeTerms = parseKeywordList(excludeKeywords);
+    const preciseDefaultExclusions = isPreciseMode
+      ? ['group', 'groups', 'jobs', 'career', 'vacancy', 'وظائف', 'توظيف', 'internship']
+      : [];
+    const excludeTerms = [...new Set([...userExcludeTerms, ...preciseDefaultExclusions])];
+
+    let queries = [];
+    const addQuery = (rawText, { scoped = true, unscoped = false } = {}) => {
+      const normalizedText = String(rawText || '').trim();
+      if (!normalizedText) return;
+      const withModifiers = applyKeywordModifiers(normalizedText, includeTerms, excludeTerms);
+      if (!withModifiers) return;
+      if (scoped) queries.push(buildFacebookScopedQuery(withModifiers, true));
+      if (unscoped) queries.push(buildFacebookScopedQuery(withModifiers, false));
+    };
+
+    // Base queries (scoped + unscoped) for wider recall.
+    addQuery(baseQuery, { scoped: true, unscoped: true });
+    addQuery(`${baseQuery} Facebook`, { scoped: true, unscoped: true });
+    addQuery(`${baseQuery} facebook page`, { scoped: true, unscoped: true });
 
     if (comprehensive) {
       const variants = [
-        `${baseQuery} Facebook`,
         `${baseQuery} صفحة فيسبوك`,
-        `${baseQuery} جروب فيسبوك`,
-        `${baseQuery} facebook page`,
-        `${baseQuery} facebook group`,
+        `${baseQuery} facebook business page`,
+        `${baseQuery} official facebook`,
+        `${baseQuery} الصفحة الرسمية`,
         `${baseQuery} contact`,
+        `${baseQuery} whatsapp`,
+        `${baseQuery} messenger`,
+        `${baseQuery} phone`,
         `${baseQuery} رقم هاتف`,
       ];
+      if (!isPreciseMode) {
+        variants.push(`${baseQuery} جروب فيسبوك`, `${baseQuery} facebook group`);
+      }
 
       for (const variant of variants) {
-        queries.push(buildFacebookScopedQuery(variant));
+        addQuery(variant, { scoped: true, unscoped: true });
       }
 
       if (selectedArea) {
-        queries.push(buildFacebookScopedQuery(`${baseQuery} ${selectedArea}`));
-        queries.push(buildFacebookScopedQuery(`${baseQuery} في ${selectedArea}`));
-      } else if (city) {
-        queries.push(buildFacebookScopedQuery(`${baseQuery} ${city}`));
-        queries.push(buildFacebookScopedQuery(`${baseQuery} في ${city}`));
-        const areas = CITY_AREAS_SERVER[city] || [];
+        addQuery(`${baseQuery} ${selectedArea}`, { scoped: true, unscoped: true });
+        addQuery(`${baseQuery} في ${selectedArea}`, { scoped: true, unscoped: true });
+        addQuery(`${baseQuery} ${selectedArea} صفحة`, { scoped: true, unscoped: true });
+      } else if (cityName) {
+        addQuery(`${baseQuery} ${cityName}`, { scoped: true, unscoped: true });
+        addQuery(`${baseQuery} في ${cityName}`, { scoped: true, unscoped: true });
+        const areas = CITY_AREAS_SERVER[cityName] || [];
         for (const cityArea of areas) {
-          queries.push(buildFacebookScopedQuery(`${baseQuery} ${cityArea}`));
+          addQuery(`${baseQuery} ${cityArea}`, { scoped: true, unscoped: !isPreciseMode });
         }
       }
     }
 
-    queries = [...new Set(queries.map(q => q.trim()).filter(Boolean))].slice(0, 120);
-    res.json({ queries });
+    if (isPreciseMode) {
+      const focusLocation = selectedArea || cityName;
+      if (focusLocation) {
+        addQuery(`${baseQuery} ${focusLocation} صفحة رسمية`, { scoped: true, unscoped: true });
+        addQuery(`${baseQuery} ${focusLocation} اتصل بنا`, { scoped: true, unscoped: true });
+        addQuery(`${baseQuery} ${focusLocation} WhatsApp`, { scoped: true, unscoped: true });
+      }
+
+      // Extra strict variants to improve precision.
+      addQuery(`${baseQuery} official page`, { scoped: true, unscoped: true });
+      addQuery(`${baseQuery} business page`, { scoped: true, unscoped: true });
+    }
+
+    if (!comprehensive) {
+      // In non-comprehensive mode we still keep small useful alternatives.
+      addQuery(`${baseQuery} اتصل بنا`, { scoped: true, unscoped: true });
+      if (selectedArea || cityName) {
+        addQuery(`${baseQuery} ${selectedArea || cityName}`, { scoped: true, unscoped: true });
+      }
+    }
+
+    queries = [...new Set(queries.map(q => q.trim()).filter(Boolean))].slice(0, isPreciseMode ? 110 : 140);
+
+    if (queries.length === 0) {
+      // fallback hard safety
+      const fallback = buildFacebookScopedQuery(baseQuery, true);
+      if (fallback) {
+        queries = [fallback];
+      } else {
+        return res.status(400).json({ error: 'no valid queries generated' });
+      }
+    }
+
+    res.json({
+      queries,
+      meta: {
+        preciseMode: isPreciseMode,
+        includeKeywords: includeTerms,
+        excludeKeywords: excludeTerms,
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -332,16 +433,16 @@ app.post('/api/scrape/facebook/build-queries', async (req, res) => {
 app.post('/api/scrape/facebook/search-single', async (req, res) => {
   try {
     const { query, engineHint } = req.body;
-    if (!query) return res.status(400).json({ error: 'query is required' });
+    const searchQuery = String(query || '').trim();
+    if (!searchQuery) return res.status(400).json({ error: 'query is required' });
 
-    const scopedQuery = buildFacebookScopedQuery(query);
-    const { businesses: results, _debug } = await scrapeLocalSearch(scopedQuery, engineHint || 0);
+    const { businesses: results, _debug } = await scrapeLocalSearch(searchQuery, engineHint || 0);
 
     const leads = results.map(biz => ({
       company_name: biz.name,
       phone: (biz.phone || '').replace(/[\s\-]+/g, ''),
       email: '',
-      website: /facebook\.com/i.test(biz.website || '') ? biz.website : '',
+      website: biz.website || '',
       search_link: buildFacebookSearchUrl(query),
       industry: '',
       city: '',
@@ -373,9 +474,10 @@ app.post('/api/scrape/facebook/search-single', async (req, res) => {
   }
 });
 
-function buildLinkedInScopedQuery(query) {
+function buildLinkedInScopedQuery(query, enforceSite = true) {
   const normalized = String(query || '').trim();
   if (!normalized) return '';
+  if (!enforceSite) return normalized;
   if (/site:\s*linkedin\.com/i.test(normalized) || /linkedin\.com/i.test(normalized)) {
     return normalized;
   }
@@ -385,44 +487,112 @@ function buildLinkedInScopedQuery(query) {
 // Build LinkedIn queries endpoint — returns query list for frontend-managed batching
 app.post('/api/scrape/linkedin/build-queries', async (req, res) => {
   try {
-    const { query, city, area, comprehensive } = req.body;
+    const {
+      query,
+      city,
+      area,
+      comprehensive,
+      preciseMode,
+      includeKeywords,
+      excludeKeywords,
+    } = req.body;
     const baseQuery = String(query || '').trim();
     if (!baseQuery) return res.status(400).json({ error: 'query is required' });
 
+    const isPreciseMode = Boolean(preciseMode);
+    const cityName = String(city || '').trim();
     const selectedArea = area && area !== 'all' ? String(area).trim() : '';
-    const scopedBase = buildLinkedInScopedQuery(baseQuery);
-    let queries = [scopedBase];
+    if (isPreciseMode && !selectedArea && !cityName) {
+      return res.status(400).json({ error: 'city or area is required in precise mode' });
+    }
+
+    const includeTerms = parseKeywordList(includeKeywords);
+    const userExcludeTerms = parseKeywordList(excludeKeywords);
+    const preciseDefaultExclusions = isPreciseMode
+      ? ['jobs', 'job', 'hiring', 'careers', 'internship', 'وظائف', 'توظيف', 'vacancy']
+      : [];
+    const excludeTerms = [...new Set([...userExcludeTerms, ...preciseDefaultExclusions])];
+
+    let queries = [];
+    const addQuery = (rawText, { scoped = true, unscoped = false } = {}) => {
+      const normalizedText = String(rawText || '').trim();
+      if (!normalizedText) return;
+      const withModifiers = applyKeywordModifiers(normalizedText, includeTerms, excludeTerms);
+      if (!withModifiers) return;
+      if (scoped) queries.push(buildLinkedInScopedQuery(withModifiers, true));
+      if (unscoped) queries.push(buildLinkedInScopedQuery(withModifiers, false));
+    };
+
+    // Base queries (scoped + unscoped) for better recall.
+    addQuery(baseQuery, { scoped: true, unscoped: true });
+    addQuery(`${baseQuery} LinkedIn`, { scoped: true, unscoped: true });
+    addQuery(`${baseQuery} linkedin company`, { scoped: true, unscoped: true });
 
     if (comprehensive) {
       const variants = [
-        `${baseQuery} LinkedIn`,
-        `${baseQuery} linkedin company`,
         `${baseQuery} linkedin profile`,
         `${baseQuery} linkedin page`,
+        `${baseQuery} company profile`,
         `${baseQuery} company`,
-        `${baseQuery} official`,
+        `${baseQuery} official page`,
+        `${baseQuery} official linkedin`,
+        `${baseQuery} employees`,
+        `${baseQuery} management`,
+        `${baseQuery} hr`,
         `${baseQuery} contact`,
       ];
 
       for (const variant of variants) {
-        queries.push(buildLinkedInScopedQuery(variant));
+        addQuery(variant, { scoped: true, unscoped: true });
       }
 
       if (selectedArea) {
-        queries.push(buildLinkedInScopedQuery(`${baseQuery} ${selectedArea}`));
-        queries.push(buildLinkedInScopedQuery(`${baseQuery} في ${selectedArea}`));
-      } else if (city) {
-        queries.push(buildLinkedInScopedQuery(`${baseQuery} ${city}`));
-        queries.push(buildLinkedInScopedQuery(`${baseQuery} في ${city}`));
-        const areas = CITY_AREAS_SERVER[city] || [];
+        addQuery(`${baseQuery} ${selectedArea}`, { scoped: true, unscoped: true });
+        addQuery(`${baseQuery} في ${selectedArea}`, { scoped: true, unscoped: true });
+      } else if (cityName) {
+        addQuery(`${baseQuery} ${cityName}`, { scoped: true, unscoped: true });
+        addQuery(`${baseQuery} في ${cityName}`, { scoped: true, unscoped: true });
+        const areas = CITY_AREAS_SERVER[cityName] || [];
         for (const cityArea of areas) {
-          queries.push(buildLinkedInScopedQuery(`${baseQuery} ${cityArea}`));
+          addQuery(`${baseQuery} ${cityArea}`, { scoped: true, unscoped: !isPreciseMode });
         }
       }
     }
 
-    queries = [...new Set(queries.map(q => q.trim()).filter(Boolean))].slice(0, 120);
-    res.json({ queries });
+    if (isPreciseMode) {
+      const focusLocation = selectedArea || cityName;
+      if (focusLocation) {
+        addQuery(`${baseQuery} ${focusLocation} official`, { scoped: true, unscoped: true });
+        addQuery(`${baseQuery} ${focusLocation} company profile`, { scoped: true, unscoped: true });
+        addQuery(`${baseQuery} ${focusLocation} hr`, { scoped: true, unscoped: true });
+      }
+      addQuery(`${baseQuery} official company page`, { scoped: true, unscoped: true });
+      addQuery(`${baseQuery} verified company`, { scoped: true, unscoped: true });
+    }
+
+    if (!comprehensive) {
+      addQuery(`${baseQuery} company`, { scoped: true, unscoped: true });
+      if (selectedArea || cityName) addQuery(`${baseQuery} ${selectedArea || cityName}`, { scoped: true, unscoped: true });
+    }
+
+    queries = [...new Set(queries.map(q => q.trim()).filter(Boolean))].slice(0, isPreciseMode ? 110 : 140);
+    if (queries.length === 0) {
+      const fallback = buildLinkedInScopedQuery(baseQuery, true);
+      if (fallback) {
+        queries = [fallback];
+      } else {
+        return res.status(400).json({ error: 'no valid queries generated' });
+      }
+    }
+
+    res.json({
+      queries,
+      meta: {
+        preciseMode: isPreciseMode,
+        includeKeywords: includeTerms,
+        excludeKeywords: excludeTerms,
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -432,16 +602,16 @@ app.post('/api/scrape/linkedin/build-queries', async (req, res) => {
 app.post('/api/scrape/linkedin/search-single', async (req, res) => {
   try {
     const { query, engineHint } = req.body;
-    if (!query) return res.status(400).json({ error: 'query is required' });
+    const searchQuery = String(query || '').trim();
+    if (!searchQuery) return res.status(400).json({ error: 'query is required' });
 
-    const scopedQuery = buildLinkedInScopedQuery(query);
-    const { businesses: results, _debug } = await scrapeLocalSearch(scopedQuery, engineHint || 0);
+    const { businesses: results, _debug } = await scrapeLocalSearch(searchQuery, engineHint || 0);
 
     const leads = results.map(biz => ({
       company_name: biz.name,
       phone: (biz.phone || '').replace(/[\s\-]+/g, ''),
       email: '',
-      website: /linkedin\.com/i.test(biz.website || '') ? biz.website : '',
+      website: biz.website || '',
       search_link: buildLinkedInSearchUrl(query),
       industry: '',
       city: '',
