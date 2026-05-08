@@ -43,11 +43,13 @@ export default function DashboardLayout() {
   if (!user) return null;
 
   const isSales = user.role === 'sales';
+  const canManageUsers = user.role === 'admin' || user.role === 'manager' || !!user.permissions?.users;
 
   const menuItems = [
     { icon: LayoutDashboard, label: t('dashboard'), path: '/dashboard' },
     ...(!isSales ? [{ icon: Globe, label: t('data_collection'), path: '/dashboard/collect' }] : []),
     { icon: Users, label: t('leads'), path: '/dashboard/leads' },
+    ...(canManageUsers ? [{ icon: Shield, label: t('users'), path: '/dashboard/users' }] : []),
     ...(isSales ? [{ icon: GitBranch, label: t('pipeline'), path: '/dashboard/pipeline' }] : []),
     ...(!isSales ? [{ icon: PhoneCall, label: t('calls'), path: '/dashboard/calls' }] : []),
     ...(!isSales ? [{ icon: Radio, label: t('auto_dial'), path: '/dashboard/auto-dial' }] : []),
@@ -59,7 +61,6 @@ export default function DashboardLayout() {
     ...(!isSales ? [{ icon: TrendingUp, label: t('analytics'), path: '/dashboard/analytics' }] : []),
     ...(!isSales ? [{ icon: Settings, label: t('settings'), path: '/dashboard/settings' }] : []),
     ...(user.role === 'admin' ? [{ icon: UserCheck, label: t('employee_performance'), path: '/dashboard/employee-performance' }] : []),
-    ...(user.role === 'admin' || user.role === 'manager' ? [{ icon: Shield, label: t('users'), path: '/dashboard/users' }] : []),
   ];
 
   const handleLogout = () => {
