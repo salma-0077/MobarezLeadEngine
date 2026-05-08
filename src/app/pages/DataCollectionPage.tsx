@@ -29,6 +29,8 @@ import {
   Zap,
   Layers,
   ExternalLink,
+  Plus,
+  Filter,
 } from 'lucide-react';
 
 interface ScrapedLead {
@@ -1310,7 +1312,7 @@ export default function DataCollectionPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label>{language === 'ar' ? 'كلمة البحث' : 'Search Query'}</Label>
+              <Label className="flex items-center gap-2"><Search className="size-4" /> {language === 'ar' ? 'كلمة البحث' : 'Search Query'}</Label>
               <Input
                 placeholder={language === 'ar' ? 'مثال: عيادات، مطاعم، ترجمه، مقاولات...' : 'e.g. clinics, restaurants, translation...'}
                 value={gmapsQuery}
@@ -1325,7 +1327,7 @@ export default function DataCollectionPage() {
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <Label>{language === 'ar' ? 'عدد الصفحات' : 'Pages to scan'}</Label>
+                <Label className="flex items-center gap-2"><Layers className="size-4" /> {language === 'ar' ? 'عدد الصفحات' : 'Pages to scan'}</Label>
                 <span className="text-sm font-mono text-muted-foreground">{maxPages} {language === 'ar' ? 'صفحات (~' + (maxPages * 20) + ' شركة)' : 'pages (~' + (maxPages * 20) + ' companies)'}</span>
               </div>
               <input
@@ -1390,7 +1392,7 @@ export default function DataCollectionPage() {
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="space-y-2 md:col-span-2">
-              <Label>{language === 'ar' ? 'كلمة البحث' : 'Search Query'}</Label>
+              <Label className="flex items-center gap-2"><Search className="size-4" /> {language === 'ar' ? 'كلمة البحث' : 'Search Query'}</Label>
               <Input
                 placeholder={language === 'ar' ? 'مثال: مطاعم، عيادات، مقاولات...' : 'e.g. restaurants, clinics, construction...'}
                 value={gmapsQuery}
@@ -1403,7 +1405,7 @@ export default function DataCollectionPage() {
               </p>
 
               <div className="space-y-2 pt-2">
-                <Label>{language === 'ar' ? 'رابط البحث' : 'Search Link'}</Label>
+                <Label className="flex items-center gap-2"><ExternalLink className="size-4" /> {language === 'ar' ? 'رابط البحث' : 'Search Link'}</Label>
                 <Input
                   placeholder={language === 'ar' ? 'https://www.facebook.com/search/...' : 'https://www.facebook.com/search/...'}
                   value={facebookSearchLink}
@@ -1418,7 +1420,7 @@ export default function DataCollectionPage() {
             </div>
 
             <div className="space-y-2">
-              <Label>{language === 'ar' ? (facebookPreciseMode ? 'المدينة (مطلوب في الدقيق)' : 'المدينة (اختياري)') : (facebookPreciseMode ? 'City (required in precise mode)' : 'City (optional)')}</Label>
+              <Label className="flex items-center gap-2"><Map className="size-4" /> {language === 'ar' ? (facebookPreciseMode ? 'المدينة (مطلوب في الدقيق)' : 'المدينة (اختياري)') : (facebookPreciseMode ? 'City (required in precise mode)' : 'City (optional)')}</Label>
               <Select value={gmapsCity} onValueChange={(v) => { setGmapsCity(v); setGmapsArea(''); }}>
                 <SelectTrigger>
                   <SelectValue />
@@ -1434,7 +1436,7 @@ export default function DataCollectionPage() {
 
           {CITY_AREAS[gmapsCity] && CITY_AREAS[gmapsCity].length > 0 && (
             <div className="space-y-2">
-              <Label>{language === 'ar' ? 'المنطقة / الحي (اختياري)' : 'Area / Neighborhood (optional)'}</Label>
+              <Label className="flex items-center gap-2"><MapPin className="size-4" /> {language === 'ar' ? 'المنطقة / الحي (اختياري)' : 'Area / Neighborhood (optional)'}</Label>
               <Select value={gmapsArea} onValueChange={setGmapsArea}>
                 <SelectTrigger>
                   <SelectValue placeholder={language === 'ar' ? 'كل المناطق' : 'All areas'} />
@@ -1474,7 +1476,7 @@ export default function DataCollectionPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>{language === 'ar' ? 'كلمات تضمين إضافية (اختياري)' : 'Include Keywords (optional)'}</Label>
+              <Label className="flex items-center gap-2"><Plus className="size-4" /> {language === 'ar' ? 'كلمات تضمين إضافية (اختياري)' : 'Include Keywords (optional)'}</Label>
               <Input
                 placeholder={language === 'ar' ? 'مثال: واتساب, الصفحة الرسمية, إدارة' : 'e.g. whatsapp, official page, management'}
                 value={facebookIncludeKeywords}
@@ -1487,7 +1489,7 @@ export default function DataCollectionPage() {
               </p>
             </div>
             <div className="space-y-2">
-              <Label>{language === 'ar' ? 'كلمات استبعاد (اختياري)' : 'Exclude Keywords (optional)'}</Label>
+              <Label className="flex items-center gap-2"><Filter className="size-4" /> {language === 'ar' ? 'كلمات استبعاد (اختياري)' : 'Exclude Keywords (optional)'}</Label>
               <Input
                 placeholder={language === 'ar' ? 'مثال: وظائف, جروب, career' : 'e.g. jobs, group, career'}
                 value={facebookExcludeKeywords}
@@ -1574,7 +1576,7 @@ export default function DataCollectionPage() {
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="space-y-2 md:col-span-2">
-              <Label>{language === 'ar' ? 'كلمة البحث' : 'Search Query'}</Label>
+              <Label className="flex items-center gap-2"><Search className="size-4" /> {language === 'ar' ? 'كلمة البحث' : 'Search Query'}</Label>
               <Input
                 placeholder={language === 'ar' ? 'مثال: شركات برمجيات، مقاولات، عيادات...' : 'e.g. software companies, construction, clinics...'}
                 value={gmapsQuery}
@@ -1587,7 +1589,7 @@ export default function DataCollectionPage() {
               </p>
 
               <div className="space-y-2 pt-2">
-                <Label>{language === 'ar' ? 'رابط البحث' : 'Search Link'}</Label>
+                <Label className="flex items-center gap-2"><ExternalLink className="size-4" /> {language === 'ar' ? 'رابط البحث' : 'Search Link'}</Label>
                 <Input
                   placeholder={language === 'ar' ? 'https://www.linkedin.com/search/...' : 'https://www.linkedin.com/search/...'}
                   value={linkedinSearchLink}
@@ -1602,7 +1604,7 @@ export default function DataCollectionPage() {
             </div>
 
             <div className="space-y-2">
-              <Label>{language === 'ar' ? (linkedinPreciseMode ? 'المدينة (مطلوب في الدقيق)' : 'المدينة (اختياري)') : (linkedinPreciseMode ? 'City (required in precise mode)' : 'City (optional)')}</Label>
+              <Label className="flex items-center gap-2"><Map className="size-4" /> {language === 'ar' ? (linkedinPreciseMode ? 'المدينة (مطلوب في الدقيق)' : 'المدينة (اختياري)') : (linkedinPreciseMode ? 'City (required in precise mode)' : 'City (optional)')}</Label>
               <Select value={gmapsCity} onValueChange={(v) => { setGmapsCity(v); setGmapsArea(''); }}>
                 <SelectTrigger>
                   <SelectValue />
@@ -1618,7 +1620,7 @@ export default function DataCollectionPage() {
 
           {CITY_AREAS[gmapsCity] && CITY_AREAS[gmapsCity].length > 0 && (
             <div className="space-y-2">
-              <Label>{language === 'ar' ? 'المنطقة / الحي (اختياري)' : 'Area / Neighborhood (optional)'}</Label>
+              <Label className="flex items-center gap-2"><MapPin className="size-4" /> {language === 'ar' ? 'المنطقة / الحي (اختياري)' : 'Area / Neighborhood (optional)'}</Label>
               <Select value={gmapsArea} onValueChange={setGmapsArea}>
                 <SelectTrigger>
                   <SelectValue placeholder={language === 'ar' ? 'كل المناطق' : 'All areas'} />
@@ -1658,7 +1660,7 @@ export default function DataCollectionPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>{language === 'ar' ? 'كلمات تضمين إضافية (اختياري)' : 'Include Keywords (optional)'}</Label>
+              <Label className="flex items-center gap-2"><Plus className="size-4" /> {language === 'ar' ? 'كلمات تضمين إضافية (اختياري)' : 'Include Keywords (optional)'}</Label>
               <Input
                 placeholder={language === 'ar' ? 'مثال: company, official, hr, sales' : 'e.g. company, official, hr, sales'}
                 value={linkedinIncludeKeywords}
@@ -1671,7 +1673,7 @@ export default function DataCollectionPage() {
               </p>
             </div>
             <div className="space-y-2">
-              <Label>{language === 'ar' ? 'كلمات استبعاد (اختياري)' : 'Exclude Keywords (optional)'}</Label>
+              <Label className="flex items-center gap-2"><Filter className="size-4" /> {language === 'ar' ? 'كلمات استبعاد (اختياري)' : 'Exclude Keywords (optional)'}</Label>
               <Input
                 placeholder={language === 'ar' ? 'مثال: jobs, hiring, internship' : 'e.g. jobs, hiring, internship'}
                 value={linkedinExcludeKeywords}
@@ -1758,7 +1760,7 @@ export default function DataCollectionPage() {
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="space-y-2 md:col-span-2">
-              <Label>{language === 'ar' ? 'كلمة البحث' : 'Search Query'}</Label>
+              <Label className="flex items-center gap-2"><Search className="size-4" /> {language === 'ar' ? 'كلمة البحث' : 'Search Query'}</Label>
               <Input
                 placeholder={language === 'ar' ? 'مثال: عيادات أسنان في القاهرة' : 'e.g. dental clinics in Cairo'}
                 value={gmapsQuery}
@@ -1771,7 +1773,7 @@ export default function DataCollectionPage() {
               </p>
 
               <div className="space-y-2 pt-2">
-                <Label>{language === 'ar' ? 'رابط البحث' : 'Search Link'}</Label>
+                <Label className="flex items-center gap-2"><ExternalLink className="size-4" /> {language === 'ar' ? 'رابط البحث' : 'Search Link'}</Label>
                 <Input
                   placeholder={language === 'ar' ? 'https://www.google.com/maps/search/...' : 'https://www.google.com/maps/search/...'}
                   value={gmapsSearchLink}
@@ -1786,7 +1788,7 @@ export default function DataCollectionPage() {
             </div>
 
             <div className="space-y-2">
-              <Label>{language === 'ar' ? 'المدينة' : 'City'}</Label>
+              <Label className="flex items-center gap-2"><Map className="size-4" /> {language === 'ar' ? 'المدينة' : 'City'}</Label>
               <Select value={gmapsCity} onValueChange={(v) => { setGmapsCity(v); setGmapsArea(''); }}>
                 <SelectTrigger>
                   <SelectValue />
@@ -1803,7 +1805,7 @@ export default function DataCollectionPage() {
           {/* Area/Neighborhood Selector */}
           {CITY_AREAS[gmapsCity] && CITY_AREAS[gmapsCity].length > 0 && (
             <div className="space-y-2">
-              <Label>{language === 'ar' ? 'المنطقة / الحي (اختياري)' : 'Area / Neighborhood (optional)'}</Label>
+              <Label className="flex items-center gap-2"><MapPin className="size-4" /> {language === 'ar' ? 'المنطقة / الحي (اختياري)' : 'Area / Neighborhood (optional)'}</Label>
               <Select value={gmapsArea} onValueChange={setGmapsArea}>
                 <SelectTrigger>
                   <SelectValue placeholder={language === 'ar' ? 'كل المناطق' : 'All areas'} />
